@@ -204,6 +204,10 @@ export function parseAgentSettingsBody(body: unknown): SettingsBodyResult<AgentS
 		}
 		if (raw.readableFolders.length) settings.readableFolders = raw.readableFolders.map((f: string) => f.trim());
 	}
+	if (raw.webReaderFallback !== undefined) {
+		if (typeof raw.webReaderFallback !== "boolean") return { ok: false, error: "webReaderFallback must be a boolean" };
+		settings.webReaderFallback = raw.webReaderFallback;
+	}
 	return { ok: true, settings };
 }
 

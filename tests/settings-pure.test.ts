@@ -16,6 +16,7 @@ import {
 	composeTool,
 	composeQuizMechanics,
 	composeReadableFolders,
+	composeReaderFallback,
 	sectionedSegments,
 } from "../components/settings/agent-section.tsx";
 import { nextOverrides } from "../components/settings/keyboard-section.tsx";
@@ -150,6 +151,10 @@ describe("agent section compose helpers — the replace-whole PUT body", () => {
 		const after = composeTool(before, "visual", false);
 		assert.deepEqual(after.tools, { demo: false, visual: false });
 		assert.deepEqual(after.prompts, { "system-prompt.md": true }, "prompts untouched");
+	});
+
+	it("composeReaderFallback sets only its switch", () => {
+		assert.deepEqual(composeReaderFallback({ tools: { demo: false } }, true), { tools: { demo: false }, webReaderFallback: true });
 	});
 
 	it("composeReadableFolders adds deduped, removes exactly one, carries the rest", () => {

@@ -96,6 +96,9 @@ export interface JobRunnerDeps {
 	/** The learner-granted folders the pdf job may read (fs-scope.ts).
 	 *  Absent = no access (every pdf path is refused). */
 	fsScope?: FsScope;
+	/** Settings → Agent "Reader service fallback" for web_fetch (r.jina.ai,
+	 *  a third party), read per job. Absent = off. */
+	webReaderFallback?: () => boolean;
 }
 
 export interface JobRunner {
@@ -377,6 +380,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			const brief = await runResearcherAgent(prompt, {
 				engine: model,
 				search: deps.searchProvider,
+				readerFallback: deps.webReaderFallback,
 				pdfDir,
 				abortSignal: loop.abortSignal,
 				chatId: loop.chatId,

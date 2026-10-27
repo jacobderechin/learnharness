@@ -107,6 +107,8 @@ const jobRunner = createJobRunner({
 	searchProvider,
 	// The pdf job reads learner PDFs inside the granted folders only.
 	fsScope: learnerFsScope,
+	// web_fetch's third-party reader fallback: opt-in, read per job.
+	webReaderFallback: () => effectiveSettings().agent.webReaderFallback,
 });
 /** The app's ONE extraction pipeline instance — both front doors share it:
  *  quiz-triggered session runs (turn-service) and notes imports

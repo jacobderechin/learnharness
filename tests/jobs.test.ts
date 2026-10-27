@@ -78,6 +78,11 @@ import { projectView as projectNative } from "../src/core/view.ts";
 import { subscribe } from "../src/core/events.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
 import type { SteerInput, TurnInput } from "../src/core/input-events.ts";
+import { netGuardTransport } from "../src/agent/tools/net-guard.ts";
+
+// Hermetic: the network guard's transport goes through the (stubbed)
+// global fetch; its per-hop target checks and byte cap still apply.
+netGuardTransport.current = (url, init) => globalThis.fetch(url, init);
 
 const JOBS_DIR = path.join(PATHS.data, "jobs");
 

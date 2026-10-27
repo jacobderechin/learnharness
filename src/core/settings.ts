@@ -267,6 +267,10 @@ export interface AgentSettings {
 	 *  2026-10-26). Absent/empty = no file access at all. The write route
 	 *  validates each (exists, directory, not protected). */
 	readableFolders?: string[];
+	/** web_fetch's fallback for JavaScript-rendered pages through the
+	 *  third-party reader r.jina.ai, which receives the page URL (security
+	 *  hardening, 2026-10-26: opt-in). Absent = off. */
+	webReaderFallback?: boolean;
 }
 
 /** Markdown-rendering knobs — the bare-bones set (owner decision). */
@@ -542,6 +546,8 @@ function sanitizeAgent(raw: Record<string, unknown>): AgentSettings {
 		);
 		if (folders.length) out.readableFolders = folders;
 	}
+	const webReaderFallback = boolOrDrop(raw.webReaderFallback);
+	if (webReaderFallback !== undefined) out.webReaderFallback = webReaderFallback;
 	return out;
 }
 

@@ -19,6 +19,11 @@ import * as path from "node:path";
 import { after, describe, it } from "node:test";
 import { createPdfReadTools } from "../src/agent/tools/pdf-read.ts";
 import { createWebTools } from "../src/agent/tools/web.ts";
+import { netGuardTransport } from "../src/agent/tools/net-guard.ts";
+
+// Hermetic: the network guard's transport goes through the (stubbed)
+// global fetch; its per-hop target checks and byte cap still apply.
+netGuardTransport.current = (url, init) => globalThis.fetch(url, init);
 
 /** Build a valid N-page PDF in memory — ASCII-only so string offsets ARE
  *  byte offsets; xref entries computed as we assemble. */

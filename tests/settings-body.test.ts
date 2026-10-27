@@ -35,6 +35,14 @@ describe("parseGeneralSettingsBody", () => {
 	});
 });
 
+describe("parseAgentSettingsBody — webReaderFallback", () => {
+	it("boolean only", () => {
+		const on = parseAgentSettingsBody({ webReaderFallback: true });
+		assert.ok(on.ok && on.settings.webReaderFallback === true);
+		assert.equal(parseAgentSettingsBody({ webReaderFallback: "yes" }).ok, false);
+	});
+});
+
 describe("parseAgentSettingsBody — readableFolders shape", () => {
 	it("accepts an array of paths (trimmed) and rejects anything else", () => {
 		const ok = parseAgentSettingsBody({ readableFolders: [" /notes "] });

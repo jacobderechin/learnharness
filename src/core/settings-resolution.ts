@@ -84,6 +84,8 @@ export interface EffectiveSettings {
 		graphTools: { enabled?: boolean };
 		/** Learner-granted readable folders as stored ([] = no file access). */
 		readableFolders: string[];
+		/** The opt-in third-party reader fallback (absent = off). */
+		webReaderFallback: boolean;
 	};
 	/** The resolved strong/cheap/vision slots: each tier's concrete model or
 	 *  NULL when the tier holds no model (no factory floor — BYOK all the
@@ -185,6 +187,7 @@ export function resolveSettings(record: UserSettings | null): EffectiveSettings 
 			search: agent.search ?? {},
 			graphTools: agent.graphTools ?? {},
 			readableFolders: agent.readableFolders ?? [],
+			webReaderFallback: agent.webReaderFallback === true,
 		},
 		models: {
 			strong: resolveSlot(modelsSection.strong),

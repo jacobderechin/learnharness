@@ -147,6 +147,12 @@ export function composeReadableFolders(agent: AgentSettings | undefined, change:
 	return { ...agent, readableFolders };
 }
 
+/** Compose the opt-in reader-service fallback switch (security hardening,
+ *  2026-10-26). Pure — exported for tests. */
+export function composeReaderFallback(agent: AgentSettings | undefined, on: boolean): AgentSettings {
+	return { ...agent, webReaderFallback: on };
+}
+
 /** Compose: one slot's model/thinking override. Empty model = absent
  *  override (Default — falls to the factory pin); empty thinking = the
  *  tier keeps its resolved thinking budget. Per-field independence, same
@@ -861,6 +867,19 @@ export function AgentSection({
 						</SettingsRow>
 					);
 				})()}
+				{/* The third-party reader fallback (security hardening,
+				    2026-10-26): off by default — it sends page URLs to r.jina.ai. */}
+				<SettingsRow
+					label="Reader service fallback"
+					hint="For JavaScript-heavy pages, research may send the page URL to r.jina.ai (a third party)"
+					testid="reader-fallback-row"
+				>
+					<Toggle
+						checked={agent?.webReaderFallback === true}
+						label="reader service fallback"
+						onChange={(on) => onSectionChange(composeReaderFallback(agent, on))}
+					/>
+				</SettingsRow>
 			</SettingsGroup>
 
 			{/* Readable folders (security hardening, 2026-10-26): the ONLY
