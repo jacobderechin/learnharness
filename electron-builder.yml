@@ -151,6 +151,24 @@ dmg:
       type: link
       path: /Applications
 afterPack: scripts/after-pack.cjs
+# Electron fuses (security hardening, 2026-10-26) — flipped in the binary
+# at package time:
+#  - runAsNode stays ON: the standalone server is spawned as
+#    ELECTRON_RUN_AS_NODE (main.cjs startServer) — a documented residual.
+#  - NODE_OPTIONS and --inspect* are ignored, so the packaged app cannot be
+#    code-injected through its environment or debug flags.
+#  - the app loads only from its own app.asar, with embedded integrity
+#    validation (macOS/Windows) so the shipped main-process code can't be
+#    swapped.
+#  - file:// pages get no extra privileges (nothing in the app uses file://).
+electronFuses:
+  runAsNode: true
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  grantFileProtocolExtraPrivileges: false
 win:
   icon: build/icon.ico
   target:
@@ -159,9 +177,9 @@ win:
         - x64
   artifactName: "${productName}-${version}-${arch}-setup.${ext}"
   # Unsigned Windows release (owner ruling): preserve icon/version metadata,
-  # skip signing, and do not require a publisher signature for updates.
+  # skip signing. Code signing is deferred (docs/desktop-release.md); there
+  # is no auto-updater to verify signatures for (notify-only updates).
   signExecutable: false
-  verifyUpdateCodeSignature: false
 nsis:
   oneClick: true
   perMachine: false
@@ -178,15 +196,12 @@ linux:
   category: Education
   # Match Electron's app_id/WM_CLASS to the installed desktop launcher.
   syncDesktopName: true
-  # Both targets update via electron-updater 6.8.9. AppImage replaces its
-  # own file; deb uses dpkg/apt and may request administrator permission.
 publish:
-  # Update feed = GitHub Releases (decided 2026-10-08): latest-mac.yml +
-  # zip/blockmap live on releases; electron-updater reads them anonymously.
-  # REQUIRES THE REPO TO BE PUBLIC before 0.3.0 ships — anonymous downloads
-  # from a private repo are impossible, and a token baked into the app
-  # would be a leak. desktop:dist passes no --publish flag, so builds never
-  # upload; publishing happens at release time (GH_TOKEN + --publish).
+  # Release assets go to GitHub Releases. The app only CHECKS the latest
+  # release (notify-only updates, security hardening 2026-10-26) and links
+  # to it; nothing downloads or installs itself. desktop:dist passes no
+  # --publish flag, so builds never upload; publishing happens at release
+  # time (GH_TOKEN + --publish).
   - provider: github
     owner: amosblomqvist
     repo: learnharness

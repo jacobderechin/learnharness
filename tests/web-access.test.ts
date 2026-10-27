@@ -63,3 +63,20 @@ describe("webAccess", () => {
 		assert.equal(desktopServer({ LH_DESKTOP_API_SECRET: "x" }), true);
 	});
 });
+
+describe("app Content-Security-Policy (next.config.ts headers)", () => {
+	it("blocks remote images/scripts and foreign framing; allows the dictation socket", async () => {
+		const { default: nextConfig } = await import("../next.config.ts");
+		const rules = await nextConfig.headers!();
+		const headers = Object.fromEntries(rules[0]!.headers.map((h) => [h.key, h.value]));
+		const csp = headers["Content-Security-Policy"]!;
+		assert.match(csp, /img-src 'self' data: blob:(;|$)/);
+		assert.match(csp, /script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'/);
+		assert.match(csp, /connect-src 'self' wss:\/\/api\.deepgram\.com/);
+		assert.match(csp, /object-src 'none'/);
+		assert.match(csp, /frame-ancestors 'none'/);
+		assert.doesNotMatch(csp, /upgrade-insecure-requests/, "the app is served over http://127.0.0.1");
+		assert.equal(headers["Referrer-Policy"], "no-referrer");
+		assert.equal(nextConfig.poweredByHeader, false);
+	});
+});

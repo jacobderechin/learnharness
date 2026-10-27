@@ -96,7 +96,7 @@ describe("desktop window chrome", () => {
 		runInNewContext(readFileSync(new URL("../electron/preload.cjs", import.meta.url), "utf8"), context);
 		assert.equal(bridge.platform, "win32");
 		assert.deepEqual(Object.keys(bridge).sort(), [
-			"chatgpt", "checkForUpdates", "expandWindow", "getUpdateState", "getZoom", "installUpdate", "onOpenSettings", "onUpdateStatus", "onZoom", "pickFolder", "platform", "subscriptions",
+			"chatgpt", "checkForUpdates", "expandWindow", "getUpdateState", "getZoom", "onOpenSettings", "onUpdateStatus", "onZoom", "openReleasePage", "pickFolder", "platform", "subscriptions",
 		]);
 		assert.deepEqual(Object.keys(bridge.subscriptions as object).sort(), ["cancel", "consent", "disconnect", "login", "onChange", "open", "respond", "retry", "status"]);
 	});
@@ -151,7 +151,18 @@ describe("desktop packaging policy", () => {
 		]);
 		assert.deepEqual(config.win.target, [{ target: "nsis", arch: ["x64"] }]);
 		assert.equal(config.win.signExecutable, false);
-		assert.equal(config.win.verifyUpdateCodeSignature, false);
+		assert.equal(config.win.verifyUpdateCodeSignature, undefined, "no auto-updater left to verify (notify-only)");
+		// Fuses (security hardening, 2026-10-26): RunAsNode is the one
+		// documented exception — the standalone server needs it.
+		assert.deepEqual(config.electronFuses, {
+			runAsNode: true,
+			enableCookieEncryption: true,
+			enableNodeOptionsEnvironmentVariable: false,
+			enableNodeCliInspectArguments: false,
+			enableEmbeddedAsarIntegrityValidation: true,
+			onlyLoadAppFromAsar: true,
+			grantFileProtocolExtraPrivileges: false,
+		});
 		assert.deepEqual(config.linux.target, [
 			{ target: "AppImage", arch: ["x64"] }, { target: "deb", arch: ["x64"] },
 		]);

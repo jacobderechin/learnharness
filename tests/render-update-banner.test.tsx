@@ -26,7 +26,7 @@ const dom = parseHTML("<html><body></body></html>");
 (globalThis as Record<string, unknown>).window = dom.window;
 (globalThis as Record<string, unknown>).document = dom.document;
 
-describe("update banner (Wave C)", () => {
+describe("update banner (notify-only)", () => {
 	afterEach(() => {
 		delete (window as { lh?: unknown }).lh;
 	});
@@ -43,23 +43,23 @@ describe("update banner (Wave C)", () => {
 				listeners.push(cb);
 				return () => {};
 			},
-			installUpdate: () => {},
+			openReleasePage: async () => {},
 		};
 		const html = renderToStaticMarkup(<UpdateBanner />);
 		assert.equal(html, "");
 		void listeners;
 	});
 
-	it("shows the version + Restart once the downloaded push arrives, and Restart installs", async () => {
+	it("shows the version + Download once an available push arrives, and Download opens the release page", async () => {
 		let pushed: ((s: UpdateState) => void) | null = null;
-		let installed = 0;
+		let opened = 0;
 		(window as { lh?: unknown }).lh = {
 			onUpdateStatus: (cb: (s: UpdateState) => void) => {
 				pushed = cb;
 				return () => {};
 			},
-			installUpdate: () => {
-				installed += 1;
+			openReleasePage: async () => {
+				opened += 1;
 			},
 		};
 		const host = document.createElement("div");
@@ -69,14 +69,14 @@ describe("update banner (Wave C)", () => {
 		assert.equal(host.innerHTML, "", "hidden before the push");
 
 		await new Promise((r) => setTimeout(r, 0));
-		flushSync(() => pushed?.({ status: "downloaded", version: "0.3.1", revision: 1 }));
+		flushSync(() => pushed?.({ status: "available", version: "0.3.1", revision: 1 }));
 		assert.ok(host.innerHTML.includes("0.3.1"), "the version renders");
-		assert.ok(host.innerHTML.includes("Restart"), "the restart affordance renders");
+		assert.ok(host.innerHTML.includes("Download"), "the download affordance renders");
 
 		const button = host.querySelector<HTMLButtonElement>("[data-testid='update-banner'] button");
-		assert.ok(button, "restart button exists");
+		assert.ok(button, "download button exists");
 		button!.click();
-		assert.equal(installed, 1, "Restart asks the shell to quit-and-install");
+		assert.equal(opened, 1, "Download asks the shell to open the release page (nothing installs)");
 		root.unmount();
 		host.remove();
 	});
