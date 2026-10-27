@@ -16,7 +16,7 @@ Not a chat app with a graph bolted on: sessions are probe→teach lessons, the p
 npm install          # once
 
 npm run dev          # 127.0.0.1 only — open the printed http://127.0.0.1:3000/?lh_token=… URL once
-npm run build        # production build (standalone output)
+npm run build        # production build (standalone output; Next telemetry off)
 npm start            # serve the production build (same launcher, same token URL)
 
 npm test             # the full suite (node:test via tsx; deterministic, no LLM, no network)
@@ -50,7 +50,7 @@ The packaged desktop app keeps keys in `userData/auth.enc`, sealed with the OS k
 
 ### Web/dev access
 
-`npm run dev`, `npm start` and `npm run desktop:dev` go through `scripts/web-launch.mjs`: Next binds **127.0.0.1 only**, and the launcher prints a one-time sign-in URL (`/?lh_token=…`). Opening it sets an HttpOnly session cookie; every page and API request needs that cookie, a localhost Host header, and (for API writes) a same-origin request. Set `LH_WEB_TOKEN` (≥ 32 chars) to keep the same token across restarts. Starting `next` directly, without the launcher, serves nothing (fail closed).
+`npm run dev`, `npm start` and `npm run desktop:dev` go through `scripts/web-launch.mjs`: Next binds **127.0.0.1 only**, and the launcher prints a one-time sign-in URL (`/?lh_token=…`). Opening it sets an HttpOnly session cookie; every page and API request needs that cookie, a localhost Host header, and (for API writes) a same-origin request. Set `LH_WEB_TOKEN` (≥ 32 chars) to keep the same token across restarts. Starting `next` directly, without the launcher, serves nothing (fail closed). Every Next process the launcher (and the desktop app) starts runs with `NEXT_TELEMETRY_DISABLED=1`; to also silence a bare `npx next …` on your machine, run `npx next telemetry disable` once.
 
 ### Agent file access
 

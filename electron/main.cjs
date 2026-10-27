@@ -272,6 +272,7 @@ function startServer(port) {
 					...process.env,
 					ELECTRON_RUN_AS_NODE: "1",
 					NODE_ENV: "production",
+					NEXT_TELEMETRY_DISABLED: "1", // no Next.js usage telemetry from the packaged app
 					PORT: String(port),
 					HOSTNAME: "127.0.0.1", // the server defaults to 0.0.0.0 — never
 					LH_DATA_DIR: DATA_DIR(),

@@ -80,3 +80,15 @@ describe("app Content-Security-Policy (next.config.ts headers)", () => {
 		assert.equal(nextConfig.poweredByHeader, false);
 	});
 });
+
+describe("Next.js telemetry is off everywhere the repo starts Next", () => {
+	it("launcher (dev/start/build), desktop server spawn, and the build script", async () => {
+		const { readFileSync } = await import("node:fs");
+		const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+		assert.match(read("../scripts/web-launch.mjs"), /NEXT_TELEMETRY_DISABLED: "1"/);
+		assert.match(read("../electron/main.cjs"), /NEXT_TELEMETRY_DISABLED: "1"/);
+		const pkg = JSON.parse(read("../package.json")) as { scripts: Record<string, string> };
+		for (const name of ["dev", "start", "build", "desktop:dev"]) assert.match(pkg.scripts[name]!, /scripts\/web-launch\.mjs/, name);
+		assert.doesNotMatch(pkg.scripts["desktop:dist"]!, /&& next build/, "desktop:dist builds through npm run build");
+	});
+});

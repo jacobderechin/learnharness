@@ -125,6 +125,7 @@ async function main() {
 			LH_DATA_DIR: dataDir,
 			LH_AUTH_FILE: authFile,
 			LH_WEB_TOKEN: WEB_TOKEN,
+			NEXT_TELEMETRY_DISABLED: "1",
 		},
 		stdio: ["ignore", "pipe", "pipe"],
 	});
