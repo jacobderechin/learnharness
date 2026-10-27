@@ -1,6 +1,7 @@
 import {
 	clampThinkingLevel,
 	createModels,
+	defaultProviderAuthContext,
 	getSupportedThinkingLevels,
 	type Api,
 	type Model,
@@ -50,25 +51,34 @@ export type { ThinkingLevel };
 
 let collection: ReturnType<typeof createModels> | undefined;
 
+/** The store-backed env lookup pi-ai resolves provider auth through
+ *  (security hardening, 2026-10-26): the server's keys module installs it
+ *  at import (src/server/keys.ts providerEnvValue — env-first, then the
+ *  keyring-sealed store), so stored keys never have to live in
+ *  process.env. Absent (tests, no server) = pi-ai's default env lookup.
+ *  The agent layer may not import the server, hence the seam. */
+export const providerEnvSource: { current?: (name: string) => string | undefined } = {};
+
 /** The process-wide pi-ai Models collection — EVERY builtin provider's
  *  catalog (model slots wave, 2026-09-20): engines and the picker resolve
  *  against all of pi-ai's per-provider catalogs, so a settings slot can pin
- *  any native model id. Auth is resolved per request by pi-ai itself from
- *  the environment (the keys seam reflects file-saved keys into env), and
- *  a provider with no key simply fails its stream with "not configured" —
- *  honest, late, and unreachable through the picker, which gates on
- *  keyPresent. */
+ *  any native model id. Auth is resolved per request by pi-ai through the
+ *  AuthContext below (providerEnvSource), and a provider with no key simply
+ *  fails its stream with "not configured" — honest, late, and unreachable
+ *  through the picker, which gates on keyPresent. */
 export function piModels() {
 	if (!collection) {
-		collection = createModels({ identity: APP_IDENTITY });
+		const ambient = defaultProviderAuthContext();
+		collection = createModels({
+			identity: APP_IDENTITY,
+			authContext: {
+				env: async (name) => (providerEnvSource.current ? providerEnvSource.current(name) : ambient.env(name)),
+				fileExists: (file) => ambient.fileExists(file),
+			},
+		});
 		for (const provider of builtinProviders()) collection.setProvider(provider);
 	}
 	return collection;
-}
-
-/** OpenRouter API key (BYOK); tests never read this — they inject engines. */
-export function openRouterApiKey(): string | undefined {
-	return process.env.OPENROUTER_API_KEY || undefined;
 }
 
 /** A fully-resolved model pin — the shape every engine now comes from:
@@ -95,9 +105,8 @@ function defaultThinkingLevel(model: Model<Api>): ThinkingLevel {
 
 /** The production engine for a RESOLVED spec (model slots wave,
  *  2026-09-20): provider-aware catalog lookup + thinking clamp. The API
- *  key is resolved by pi-ai itself from the environment per request (the
- *  keys seam reflects file-saved keys into env), so the engine never
- *  hardcodes OpenRouter's. */
+ *  key is resolved by pi-ai per request through piModels()' AuthContext
+ *  (the key store, never a hardcoded key). */
 export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (() => boolean) = true, lifecycle?: ChatGPTDispatchLifecycle): PiEngine {
 	const models: Models = piModels();
 	const nativeId = nativeSubscriptionId(spec.provider);

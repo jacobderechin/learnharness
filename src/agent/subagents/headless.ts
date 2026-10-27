@@ -1,15 +1,24 @@
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
-import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { standardFontsDir } from "./pdf-ops";
+import { fileURLToPath } from "node:url";
+import { DEMO_CSP, DEMO_SANDBOX_URL } from "../../core/demo-sandbox.ts";
+import { assertPdfSize, standardFontsDir } from "./pdf-ops";
 
 /**
  * Verification engines for sub-agents: demos use the app's own Electron
  * browser-service via puppeteer-core, with system Chrome as fallback.
  * SVGs use resvg (browser fallback); PDFs use pdfjs + Skia (no browser).
  * No extra Chromium is shipped or downloaded.
+ *
+ * GENERATED CONTENT IS SANDBOXED (security hardening, 2026-10-26): pages
+ * load at the opaque DEMO_SANDBOX_URL (never file://) through request
+ * interception, served with the no-network DEMO_CSP; every other request
+ * is aborted and reported as a failed request. The helper process itself
+ * runs on a throwaway profile with permissions, popups and navigation
+ * denied (electron/main.cjs), and shuts down after HELPER_IDLE_MS so its
+ * local debugging port is open only while jobs run. The Chrome fallback
+ * keeps Chrome's OS sandbox ON — no --no-sandbox, ever.
  *
  * Chrome fallback resolution: CHROME_PATH first, then common macOS,
  * Windows and Linux install paths. `available()` is a cheap executable
@@ -158,7 +167,30 @@ export function browserServiceBinary(): string | null {
 }
 
 const BROWSER_SERVICE_TIMEOUT_MS = 15_000;
+/** Helper idle shutdown: no job for this long → kill it (the next job
+ *  respawns it), so the CDP port is not left listening between jobs. */
+export const HELPER_IDLE_MS = 2 * 60_000;
 let browserServiceProc: import("node:child_process").ChildProcess | null = null;
+let helperIdleTimer: ReturnType<typeof setTimeout> | null = null;
+let helperActiveJobs = 0;
+
+function helperJobStarted(): void {
+	helperActiveJobs++;
+	if (helperIdleTimer) clearTimeout(helperIdleTimer);
+	helperIdleTimer = null;
+}
+
+function helperJobFinished(): void {
+	helperActiveJobs = Math.max(0, helperActiveJobs - 1);
+	if (helperActiveJobs > 0) return;
+	helperIdleTimer = setTimeout(() => {
+		helperIdleTimer = null;
+		if (helperActiveJobs > 0) return;
+		browserServiceProc?.kill();
+		browserServiceProc = null;
+	}, HELPER_IDLE_MS);
+	helperIdleTimer.unref?.();
+}
 
 async function connectBrowserService(): Promise<import("puppeteer-core").Browser | null> {
 	const puppeteer = (await import("puppeteer-core")).default;
@@ -237,7 +269,14 @@ let helperPageChain: Promise<unknown> = Promise.resolve();
 async function withBrowserPage<T>(fn: (page: import("puppeteer-core").Page) => Promise<T>): Promise<T> {
 	// Helper first (owner ruling 2026-10-10: the app's own Chromium primary,
 	// system Chrome fallback) — deterministic across users, zero install.
-	const helper = await connectBrowserService();
+	helperJobStarted();
+	let helper: import("puppeteer-core").Browser | null;
+	try {
+		helper = await connectBrowserService();
+	} catch (err) {
+		helperJobFinished();
+		throw err;
+	}
 	if (helper) {
 		const run = async (): Promise<T> => {
 			const pages = await helper.pages();
@@ -246,16 +285,24 @@ async function withBrowserPage<T>(fn: (page: import("puppeteer-core").Page) => P
 			try {
 				return await fn(page);
 			} finally {
-				// Drop all page state (JS heap, listeners) between jobs.
+				// Drop all page state (JS heap, interception) between jobs, then
+				// this job's CDP connection — its page listeners die with it, so
+				// the next job's fresh connection sees a clean page.
+				await page.setRequestInterception(false).catch(() => {});
 				await page.goto("about:blank").catch(() => {});
+				await helper.disconnect().catch(() => {});
 			}
 		};
-		const next = helperPageChain.then(run, run);
+		const next = helperPageChain.then(run, run).finally(helperJobFinished);
 		helperPageChain = next.catch(() => {});
 		return next;
 	}
+	helperJobFinished();
 
-	// Chrome fallback: per-job launch, close on the way out (old semantics).
+	// Chrome fallback: per-job launch on puppeteer's throwaway profile, close
+	// on the way out. Chrome's OS sandbox stays ON (security hardening,
+	// 2026-10-26): where it cannot start sandboxed, the job fails honestly
+	// rather than running generated code unsandboxed.
 	const puppeteer = (await import("puppeteer-core")).default;
 	const executablePath = resolveChromeExecutablePath();
 	const browser = await puppeteer.launch({
@@ -263,7 +310,12 @@ async function withBrowserPage<T>(fn: (page: import("puppeteer-core").Page) => P
 		// Explicit path when we found one; otherwise let puppeteer resolve the
 		// system Chrome install itself via the "chrome" channel.
 		...(executablePath ? { executablePath } : { channel: "chrome" as const }),
-		args: ["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"],
+		args: ["--disable-gpu", "--disable-dev-shm-usage"],
+	}).catch((err: unknown) => {
+		throw new Error(
+			`System Chrome could not start with its sandbox enabled (${err instanceof Error ? err.message : String(err)}). ` +
+				"Generated code is never run unsandboxed.",
+		);
 	});
 	try {
 		const page = await browser.newPage();
@@ -273,18 +325,42 @@ async function withBrowserPage<T>(fn: (page: import("puppeteer-core").Page) => P
 	}
 }
 
-/** A temp dir per invocation; removed in finally. */
-function tempDir(prefix: string): string {
-	return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-}
-
 // ─── Demo execution ──────────────────────────────────────────────────────────
+
+/**
+ * Load a generated document in the sandbox: intercept every request, serve
+ * `html` at DEMO_SANDBOX_URL with the no-network CSP, let data:/blob: pass,
+ * abort everything else (the page's requestfailed listeners record it).
+ * Popups are closed on sight (the helper also denies them natively).
+ */
+export async function loadSandboxed(
+	page: import("puppeteer-core").Page,
+	html: string,
+	opts: { timeout?: number } = {},
+): Promise<void> {
+	await page.setRequestInterception(true);
+	page.on("request", (req) => {
+		if (req.isInterceptResolutionHandled()) return;
+		const url = req.url();
+		if (url === DEMO_SANDBOX_URL && req.isNavigationRequest() && req.frame() === page.mainFrame()) {
+			void req.respond({
+				status: 200,
+				contentType: "text/html; charset=utf-8",
+				headers: { "content-security-policy": DEMO_CSP },
+				body: html,
+			});
+		} else if (url.startsWith("data:") || url.startsWith("blob:")) {
+			void req.continue();
+		} else {
+			void req.abort("blockedbyclient");
+		}
+	});
+	page.on("popup", (popup) => void popup?.close().catch(() => {}));
+	await page.goto(DEMO_SANDBOX_URL, { waitUntil: "load", timeout: opts.timeout ?? 30_000 });
+}
 
 async function runDemo(html: string, opts: RunDemoOptions = {}): Promise<DemoRunResult> {
 	const settleMs = opts.settleMs ?? 2000;
-	const dir = tempDir("lh-demo-");
-	const file = path.join(dir, "demo.html");
-	fs.writeFileSync(file, html, "utf-8");
 
 	const consoleErrors: string[] = [];
 	const pageErrors: string[] = [];
@@ -292,8 +368,7 @@ async function runDemo(html: string, opts: RunDemoOptions = {}): Promise<DemoRun
 	let probeResult: unknown;
 	let probed = false;
 
-	try {
-		await withBrowserPage(async (page) => {
+	await withBrowserPage(async (page) => {
 		page.on("console", (msg) => {
 			if (msg.type() === "error") consoleErrors.push(msg.text());
 		});
@@ -301,7 +376,7 @@ async function runDemo(html: string, opts: RunDemoOptions = {}): Promise<DemoRun
 		page.on("requestfailed", (req) => failedRequests.push(`${req.url()} (${req.failure()?.errorText ?? "failed"})`));
 
 		try {
-			await page.goto(pathToFileURL(file).href, { waitUntil: "load", timeout: 30_000 });
+			await loadSandboxed(page, html);
 			await new Promise((resolve) => setTimeout(resolve, settleMs));
 			if (opts.probe) {
 				try {
@@ -314,14 +389,7 @@ async function runDemo(html: string, opts: RunDemoOptions = {}): Promise<DemoRun
 		} catch (err) {
 			pageErrors.push(err instanceof Error ? err.message : String(err));
 		}
-		});
-	} finally {
-		try {
-			fs.rmSync(dir, { recursive: true, force: true });
-		} catch {
-			/* best-effort cleanup */
-		}
-	}
+	});
 
 	return {
 		consoleErrors,
@@ -422,9 +490,13 @@ async function renderSvg(svg: string, opts: RenderSvgOptions = {}): Promise<Buff
 	// exotic-SVG features resvg cannot parse — failures there used to be
 	// the ONLY path, so nothing regresses.
 	const { width } = svgViewport(svg, opts);
+	// Generated SVGs reference nothing outside themselves (security
+	// hardening, 2026-10-26): resvg would resolve <image href="/abs/path">
+	// from local disk, so every non-data: image reference is dropped first.
+	const sealed = stripExternalSvgRefs(svg);
 	try {
 		const { Resvg } = await import("@resvg/resvg-js");
-		const resvg = new Resvg(svg, {
+		const resvg = new Resvg(sealed, {
 			fitTo: { mode: "width", value: width },
 			font: { loadSystemFonts: true },
 			background: "#ffffff",
@@ -433,30 +505,30 @@ async function renderSvg(svg: string, opts: RenderSvgOptions = {}): Promise<Buff
 	} catch {
 		/* fall through to the browser path */
 	}
-	const dir = tempDir("lh-visual-");
-	const file = path.join(dir, "figure.html");
-	fs.writeFileSync(
-		file,
-		`<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;background:#fff}svg{display:block}</style></head><body>${svg}</body></html>`,
-		"utf-8",
-	);
+	const page = `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;background:#fff}svg{display:block}</style></head><body>${sealed}</body></html>`;
 
-	return withBrowserPage(async (page) => {
+	return withBrowserPage(async (browserPage) => {
 		const { width, height } = svgViewport(svg, opts);
-		await page.setViewport({ width, height });
-		await page.goto(pathToFileURL(file).href, { waitUntil: "load", timeout: 30_000 });
-		const shot = (await page.screenshot({ fullPage: true, type: "png" })) as Buffer;
+		await browserPage.setViewport({ width, height });
+		await loadSandboxed(browserPage, page);
+		const shot = (await browserPage.screenshot({ fullPage: true, type: "png" })) as Buffer;
 		// Chrome's raw split-IDAT PNG is canonicalized before it reaches a
 		// provider (see providerSafePng) — the visual-maker feeds this exact
 		// buffer back to the vision model as its only way to "look".
 		return providerSafePng(Buffer.from(shot));
-	}).finally(() => {
-		try {
-			fs.rmSync(dir, { recursive: true, force: true });
-		} catch {
-			/* best-effort cleanup */
-		}
 	});
+}
+
+/** Drop every href / xlink:href that is not a data: URI or a same-document
+ *  fragment (#id) — pure; exported for tests. */
+export function stripExternalSvgRefs(svg: string): string {
+	return svg.replace(
+		/\s(xlink:href|href)\s*=\s*("([^"]*)"|'([^']*)')/gi,
+		(match, _attr: string, _quoted: string, dq: string | undefined, sq: string | undefined) => {
+			const value = (dq ?? sq ?? "").trim();
+			return /^(data:|#)/i.test(value) ? match : "";
+		},
+	);
 }
 
 // ─── PDF page rasterization (pdfjs paints, Skia hosts) ─────────────────
@@ -484,6 +556,7 @@ async function renderPdfPages(
 	// needed a browser; now renders don't either.
 	const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
 	const { createCanvas } = await import("@napi-rs/canvas");
+	await assertPdfSize(path.resolve(pdfPath));
 	const data = new Uint8Array(fs.readFileSync(path.resolve(pdfPath)));
 	// Standard-font data as a directory path (live-smoke finding 2026-09-19:
 	// without it pdfjs renders non-embedded standard fonts via fallback);

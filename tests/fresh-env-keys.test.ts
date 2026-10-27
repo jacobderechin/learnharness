@@ -45,7 +45,7 @@ const AUTH = path.join(TMP, "auth.json");
 process.env.LH_AUTH_FILE = AUTH;
 
 // The file BEFORE first boot: one file-only key.
-fs.writeFileSync(AUTH, JSON.stringify({ OPENAI_API_KEY: "sk-file-fresh-file-fresh" }));
+fs.writeFileSync(AUTH, JSON.stringify({ OPENAI_API_KEY: "sk-file-fresh-file-fresh" }), { mode: 0o600 });
 
 // The env the switch must hide — set BEFORE the module's first import:
 //  - an env-ONLY provider key (the engine-path specimen)
@@ -57,8 +57,8 @@ process.env.OPENAI_API_KEY = "sk-openai-env-env-env";
 // THE SWITCH — set before first import (exactly how the launcher boots).
 process.env.LH_IGNORE_ENV_KEYS = "1";
 
-// Import AFTER env setup — module init runs the boot deletion + fill-gap.
-const { deleteKey, envKeysIgnored, initAuthEnv, keyStatuses, keyValue, saveKey } = await import(
+// Import AFTER env setup — module init runs the boot deletion.
+const { deleteKey, envKeysIgnored, initAuthEnv, keyStatuses, keyValue, providerEnvValue, saveKey } = await import(
 	"../src/server/keys.ts"
 );
 const { authStore } = await import("../src/store/auth.ts");
@@ -76,8 +76,9 @@ describe("the fresh-user switch (boot under LH_IGNORE_ENV_KEYS=1)", () => {
 		assert.equal(process.env.OPENROUTER_API_KEY, undefined, "deleted from process.env at boot");
 	});
 
-	it("the env copy of a file-backed var is deleted; the FILE value is what fills the env (only auth.json counts)", () => {
-		assert.equal(process.env.OPENAI_API_KEY, "sk-file-fresh-file-fresh", "the env copy died; the fill-gap reflected the file value");
+	it("the env copy of a file-backed var is deleted; the FILE value is what the engines see (only the store counts)", () => {
+		assert.equal(process.env.OPENAI_API_KEY, undefined, "the env copy died; stored keys never enter env");
+		assert.equal(providerEnvValue("OPENAI_API_KEY"), "sk-file-fresh-file-fresh", "pi-ai's auth lookup sees the stored value");
 		assert.equal(authStore.authVars().OPENAI_API_KEY, "sk-file-fresh-file-fresh");
 	});
 
@@ -120,16 +121,16 @@ describe("the fresh-user switch (boot under LH_IGNORE_ENV_KEYS=1)", () => {
 		assert.equal(rows.some((r) => r.source === "env"), false, "no env-owned key under the switch");
 	});
 
-	it("a fresh user CAN add keys mid-session: save reflects file → env (engines see it, no restart)", () => {
-		const result = saveKey("ZAI_API_KEY", "zai-fresh-sim-key-1234567890");
+	it("a fresh user CAN add keys mid-session: the engines see it through the auth lookup, no restart", async () => {
+		const result = await saveKey("ZAI_API_KEY", "zai-fresh-sim-key-1234567890");
 		assert.equal(result.ok, true);
 		assert.equal(authStore.authVars().ZAI_API_KEY, "zai-fresh-sim-key-1234567890", "persisted to the file");
-		assert.equal(process.env.ZAI_API_KEY, "zai-fresh-sim-key-1234567890", "reflected into env for pi-ai");
+		assert.equal(providerEnvValue("ZAI_API_KEY"), "zai-fresh-sim-key-1234567890", "visible to pi-ai");
+		assert.equal(process.env.ZAI_API_KEY, undefined, "never copied into env");
 		const row = keyStatuses().find((r) => r.id === "ZAI_API_KEY");
 		assert.equal(row!.source, "file", "the status honestly reports the file as the source");
-		// and DELETE removes both (fill-gap semantics hold under the switch)
-		deleteKey("ZAI_API_KEY");
-		assert.equal(process.env.ZAI_API_KEY, undefined);
+		await deleteKey("ZAI_API_KEY");
+		assert.equal(providerEnvValue("ZAI_API_KEY"), undefined);
 		assert.equal(authStore.authVars().ZAI_API_KEY, undefined);
 	});
 
@@ -137,6 +138,6 @@ describe("the fresh-user switch (boot under LH_IGNORE_ENV_KEYS=1)", () => {
 		process.env.OPENROUTER_API_KEY = "sk-or-zombie";
 		initAuthEnv();
 		assert.equal(process.env.OPENROUTER_API_KEY, undefined, "a reintroduced env key is re-deleted");
-		assert.equal(process.env.OPENAI_API_KEY, "sk-file-fresh-file-fresh", "the file reflection survives re-init");
+		assert.equal(keyValue("OPENAI_API_KEY"), "sk-file-fresh-file-fresh", "the stored key survives re-init");
 	});
 });

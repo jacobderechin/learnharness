@@ -73,10 +73,14 @@ declare global {
 			/** Observational update events and a snapshot for late subscribers. */
 			onUpdateStatus?: (cb: (status: UpdateState) => void) => () => void;
 			getUpdateState?: () => Promise<UpdateState>;
-			/** Explicit manual check also downloads and stages available updates. */
+			/** Explicit manual check (notify-only: nothing downloads). */
 			checkForUpdates?: () => Promise<void>;
-			installUpdate?: () => void;
+			/** Open the newer version's GitHub release page in the browser. */
+			openReleasePage?: () => Promise<void>;
 			onOpenSettings?: (cb: (section: string) => void) => () => void;
+			/** Native folder picker for Settings → Agent → Readable folders;
+			 *  null when the learner cancels. */
+			pickFolder?: () => Promise<string | null>;
 		};
 	}
 }

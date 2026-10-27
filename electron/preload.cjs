@@ -17,12 +17,13 @@
  *   publishes it as --lh-zoom so physical-constant lengths (the traffic-
  *   light gutter) can divide by it.
  *
- *   window.lh.onUpdateStatus(cb) / window.lh.installUpdate() — the
- *   auto-update channel (Wave C, 2026-10-10): "lh:update-status" pushes
- *   {status, version, revision} on updater events; installUpdate asks main
- *   to kill the server and quit-and-install. getUpdateState retrieves the
- *   snapshot for a late subscriber; checkForUpdates requests a manual
- *   check (including download/install-on-quit, even with automatic checks OFF).
+ *   window.lh.onUpdateStatus(cb) / window.lh.openReleasePage() — the
+ *   notify-only update channel (security hardening, 2026-10-26):
+ *   "lh:update-status" pushes {status, version, url, revision} after each
+ *   GitHub release check; openReleasePage asks main to open the newer
+ *   version's release page in the browser (nothing installs itself).
+ *   getUpdateState retrieves the snapshot for a late subscriber;
+ *   checkForUpdates requests a manual check (even with automatic checks OFF).
  *
  *   window.lh.onOpenSettings(cb) — menu navigation, buffered until React
  *   subscribes after a window is reopened. Browser builds have no bridge.
@@ -40,6 +41,7 @@ ipcRenderer.on("lh:open-settings", (_event, section) => {
 
 contextBridge.exposeInMainWorld("lh", {
 	platform: process.platform,
+	pickFolder: () => ipcRenderer.invoke("lh:folders:pick"),
 	...(process.argv?.includes("--lh-web-subscriptions") ? {
 		subscriptionTransport: "web",
 		openSubscriptionBrowser: (action) => ipcRenderer.invoke("lh:subscriptions:web-browser", action),
@@ -85,7 +87,7 @@ contextBridge.exposeInMainWorld("lh", {
 		ipcRenderer.on("lh:update-status", listener);
 		return () => ipcRenderer.removeListener("lh:update-status", listener);
 	},
-	installUpdate: () => ipcRenderer.send("lh:update-install"),
+	openReleasePage: () => ipcRenderer.invoke("lh:update:open"),
 	getUpdateState: () => ipcRenderer.invoke("lh:update:get"),
 	checkForUpdates: () => ipcRenderer.invoke("lh:update:check"),
 	onOpenSettings: (cb) => {

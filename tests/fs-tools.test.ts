@@ -6,16 +6,18 @@ import { describe, it } from "node:test";
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { expandBraces, globToRegex, matchGlob, walkFiles } from "../src/agent/tools/fs-shared.ts";
-import { findTool } from "../src/agent/tools/find.ts";
-import { grepTool } from "../src/agent/tools/grep.ts";
-import { lsTool } from "../src/agent/tools/ls.ts";
-import { readTool } from "../src/agent/tools/read.ts";
+import { findToolFor } from "../src/agent/tools/find.ts";
+import { NO_FS_ACCESS, validateReadableFolder, type FsScope } from "../src/agent/tools/fs-scope.ts";
+import { grepToolFor } from "../src/agent/tools/grep.ts";
+import { lsToolFor } from "../src/agent/tools/ls.ts";
+import { readToolFor } from "../src/agent/tools/read.ts";
 
 /**
  * The learner-filesystem tools (sources v1, 2026-09-19): ls/find/grep as
- * pure-Node pi ports, read re-anchored to the home directory. All calls go
- * through absolute paths — the tools' relative resolution targets the real
- * home, which tests must not touch.
+ * pure-Node pi ports, read alongside. Since the security hardening
+ * (2026-10-26) every tool is built over a scope; the pi-port suites grant
+ * the whole tmpdir (every fixture lives there) and drive absolute paths.
+ * The scope suite at the bottom pins containment and the denylist.
  *
  * Fixture tree (tmpdir):
  *   notes/calculus.md         "The derivative measures force…"
@@ -28,6 +30,13 @@ import { readTool } from "../src/agent/tools/read.ts";
  */
 
 let FIXTURE: string;
+
+/** The pi-port suites' scope: every fixture is created under tmpdir. */
+const TMP_SCOPE: FsScope = { roots: () => [os.tmpdir()], denied: () => [] };
+const lsTool = lsToolFor(TMP_SCOPE);
+const findTool = findToolFor(TMP_SCOPE);
+const grepTool = grepToolFor(TMP_SCOPE);
+const readTool = readToolFor(TMP_SCOPE);
 
 /** Drive one tool's native execute and return the model-facing text
  *  (pi signature: execute(toolCallId, params, signal) → AgentToolResult). */
@@ -105,7 +114,7 @@ describe("ls (pi port)", () => {
 	});
 
 	it("missing path and non-directory throw (the model sees the error)", async () => {
-		await assert.rejects(async () => lsTool.execute!("c", { path: "/nonexistent/xyz" }), /Path not found/);
+		await assert.rejects(async () => lsTool.execute!("c", { path: path.join(FIXTURE, "nonexistent") }), /Path not found/);
 		await assert.rejects(
 			async () => lsTool.execute!("c", { path: path.join(FIXTURE, "binary.bin") }),
 			/Not a directory/,
@@ -190,7 +199,7 @@ describe("grep (pi port)", () => {
 	});
 });
 
-describe("read (home-anchored re-port)", () => {
+describe("read (pi port)", () => {
 	it("reads a fixture file verbatim through the shared slice machinery", async () => {
 		const out = await runText(readTool, { path: path.join(FIXTURE, "notes", "linear.txt") });
 		assert.match(out, /Eigenvectors keep their direction/);
@@ -248,5 +257,86 @@ describe("abort plumbing (the 2026-09-19 cascade fix)", () => {
 		const out = await runText(grepTool, { pattern: "needle", path: root }, ac.signal);
 		assert.match(out, /aborted/);
 		assert.ok(Date.now() - started < 5_000, "returned promptly");
+	});
+});
+
+describe("scope (security hardening 2026-10-26)", () => {
+	async function tree(): Promise<{ root: string; outside: string }> {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "lh-scope-"));
+		const outside = await fs.mkdtemp(path.join(os.tmpdir(), "lh-outside-"));
+		await fs.mkdir(path.join(root, "notes"), { recursive: true });
+		await fs.mkdir(path.join(root, "appdata"), { recursive: true });
+		await fs.writeFile(path.join(root, "notes", "a.md"), "needle in notes\n");
+		await fs.writeFile(path.join(root, ".env"), "needle=SECRET\n");
+		await fs.writeFile(path.join(root, "id_ed25519"), "needle private key\n");
+		await fs.writeFile(path.join(root, "appdata", "auth-ish.txt"), "needle app data\n");
+		await fs.writeFile(path.join(outside, "secret.txt"), "outside needle\n");
+		await fs.symlink(outside, path.join(root, "escape"));
+		return { root, outside };
+	}
+	const scopeOf = (roots: string[], denied: string[] = []): FsScope => ({ roots: () => roots, denied: () => denied });
+
+	it("no grants = every path refused, with the Settings hint", async () => {
+		const { root } = await tree();
+		await assert.rejects(
+			() => readToolFor(NO_FS_ACCESS).execute!("c", { path: path.join(root, "notes", "a.md") }),
+			/No readable folders are granted.*Settings → Agent → Readable folders/,
+		);
+		assert.match(await runText(lsToolFor(NO_FS_ACCESS), {}), /No readable folders are granted/);
+	});
+
+	it("paths outside the granted folders are refused (absolute, .., and symlink escapes)", async () => {
+		const { root, outside } = await tree();
+		const read = readToolFor(scopeOf([root]));
+		await assert.rejects(() => read.execute!("c", { path: path.join(outside, "secret.txt") }), /outside the readable folders/);
+		await assert.rejects(() => read.execute!("c", { path: path.join(root, "..", path.basename(outside), "secret.txt") }), /outside the readable folders/);
+		await assert.rejects(() => read.execute!("c", { path: path.join(root, "escape", "secret.txt") }), /outside the readable folders/);
+		assert.match(await runText(read, { path: path.join(root, "notes", "a.md") }), /needle in notes/);
+	});
+
+	it("the denylist applies inside granted folders: secret names and app-denied paths", async () => {
+		const { root } = await tree();
+		const read = readToolFor(scopeOf([root], [path.join(root, "appdata")]));
+		await assert.rejects(() => read.execute!("c", { path: path.join(root, ".env") }), /protected location/);
+		await assert.rejects(() => read.execute!("c", { path: path.join(root, "id_ed25519") }), /protected location/);
+		await assert.rejects(() => read.execute!("c", { path: path.join(root, "appdata", "auth-ish.txt") }), /protected location/);
+	});
+
+	it("walks prune denied files and never follow symlinks out", async () => {
+		const { root } = await tree();
+		const scope = scopeOf([root], [path.join(root, "appdata")]);
+		const grep = await runText(grepToolFor(scope), { pattern: "needle" });
+		assert.equal(grep, "notes/a.md:1: needle in notes");
+		const find = await runText(findToolFor(scope), { pattern: "*" });
+		assert.ok(!find.includes(".env") && !find.includes("id_ed25519") && !find.includes("appdata") && !find.includes("secret"));
+		const ls = await runText(lsToolFor(scope), { path: root });
+		assert.ok(!ls.includes(".env") && !ls.includes("appdata/"), ls);
+	});
+
+	it("relative paths resolve against the single granted folder; ambiguous with several", async () => {
+		const { root, outside } = await tree();
+		assert.match(await runText(readToolFor(scopeOf([root])), { path: "notes/a.md" }), /needle in notes/);
+		await assert.rejects(() => readToolFor(scopeOf([root, outside])).execute!("c", { path: "notes/a.md" }), /ambiguous/);
+	});
+
+	it("no path: ls lists the folders; find walks every folder with absolute output", async () => {
+		const { root, outside } = await tree();
+		const scope = scopeOf([root, outside]);
+		const ls = await runText(lsToolFor(scope), {});
+		assert.ok(ls.includes(`${await fs.realpath(root)}/`) && ls.includes(`${await fs.realpath(outside)}/`));
+		const find = await runText(findToolFor(scope), { pattern: "*.txt" });
+		assert.ok(find.includes(path.join(await fs.realpath(outside), "secret.txt")), find);
+	});
+
+	it("validateReadableFolder: absolute existing directories only, never root or protected", async () => {
+		const { root } = await tree();
+		const denied = { denied: () => [path.join(root, "appdata")] };
+		assert.deepEqual(await validateReadableFolder(root, denied), { ok: true, path: await fs.realpath(root) });
+		assert.equal((await validateReadableFolder("notes", denied)).ok, false);
+		assert.equal((await validateReadableFolder(path.join(root, "missing"), denied)).ok, false);
+		assert.equal((await validateReadableFolder(path.join(root, "notes", "a.md"), denied)).ok, false);
+		assert.equal((await validateReadableFolder("/", denied)).ok, false);
+		assert.equal((await validateReadableFolder(path.join(root, "appdata"), denied)).ok, false);
+		assert.equal((await validateReadableFolder(path.join(os.homedir(), ".ssh"), denied)).ok, false);
 	});
 });

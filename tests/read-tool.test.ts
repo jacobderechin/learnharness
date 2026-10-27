@@ -11,9 +11,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { readTool } from "../src/agent/tools/read.ts";
+import { readToolFor } from "../src/agent/tools/read.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "lh-read-test-"));
+/** One granted folder (fs-scope.ts): the test's scratch dir. */
+const readTool = readToolFor({ roots: () => [tmp], denied: () => [] });
 
 function write(name: string, content: string): string {
 	const file = path.join(tmp, name);
@@ -23,7 +25,7 @@ function write(name: string, content: string): string {
 
 /** Native execute → the raw string body (text reads ride details verbatim). */
 const run = (args: { path: string; offset?: number; limit?: number }) =>
-	readTool.execute!("test", args).then((r) => {
+	readTool.execute!("test", args).then((r: Awaited<ReturnType<NonNullable<typeof readTool.execute>>>) => {
 		assert.ok(r.content.length >= 1);
 		const first = r.content[0]!;
 		assert.equal(first.type, "text");
@@ -38,18 +40,9 @@ describe("read tool — text semantics", () => {
 		assert.equal(details, "hello\nworld", "the record part output carries the string verbatim");
 	});
 
-	it("resolves relative paths against the learner's home (sources v1 anchoring)", async () => {
-		// sources v1: the harness has no meaningful cwd — "find my notes" must
-		// work from a bare relative path, so the home directory is the anchor
-		// (fs-shared resolveSourcePath). Scratch file in home, cleaned up.
-		const rel = `lh-read-rel-test-${process.pid}.txt`;
-		const homeFile = path.join(os.homedir(), rel);
-		fs.writeFileSync(homeFile, "rel", "utf-8");
-		try {
-			assert.equal((await run({ path: rel })).text, "rel");
-		} finally {
-			fs.unlinkSync(homeFile);
-		}
+	it("resolves relative paths against the single granted folder (fs-scope.ts)", async () => {
+		write("rel.txt", "rel");
+		assert.equal((await run({ path: "rel.txt" })).text, "rel");
 	});
 
 	it("honors offset (1-indexed) and limit", async () => {

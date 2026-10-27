@@ -25,6 +25,7 @@
  * way, same day).
  */
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { probeEnv, verifyDemoRuntime } from "./smoke-demo-runtime.mjs";
 import { verifyProviderRuntime } from "./smoke-provider-runtime.mjs";
 import { createRequire } from "node:module";
@@ -63,9 +64,14 @@ function freePort() {
 }
 
 /** One GET; resolves the status code (0 = connection refused/failed). */
-function get(url) {
+/** The web gate's per-run token (src/server/web-access.ts): the smoke
+ *  server is launched with it and every probe carries the session cookie. */
+const WEB_TOKEN = randomBytes(32).toString("hex");
+
+function get(url, { cookie = true, host } = {}) {
 	return new Promise((resolve) => {
-		const req = http.get(url, (res) => {
+		const headers = { ...(cookie ? { cookie: `lh_session=${WEB_TOKEN}` } : {}), ...(host ? { host } : {}) };
+		const req = http.get(url, { headers }, (res) => {
 			res.resume();
 			resolve(res.statusCode ?? 0);
 		});
@@ -118,6 +124,7 @@ async function main() {
 			HOSTNAME: "127.0.0.1",
 			LH_DATA_DIR: dataDir,
 			LH_AUTH_FILE: authFile,
+			LH_WEB_TOKEN: WEB_TOKEN,
 		},
 		stdio: ["ignore", "pipe", "pipe"],
 	});
@@ -166,6 +173,14 @@ async function main() {
 			if (status !== 200) throw new Error(`GET ${route} → ${status} (expected 200)`);
 			console.log(`[smoke-server] GET ${route} → 200`);
 		}
+
+		// 3) The web gate (security hardening, 2026-10-26): no session → 401;
+		//    a rebinding Host → 403, even with the session.
+		const anonymous = await get(url + "/api/keys", { cookie: false });
+		if (anonymous !== 401) throw new Error(`GET /api/keys without a session → ${anonymous} (expected 401)`);
+		const rebound = await get(url + "/api/keys", { host: `attacker.invalid:${port}` });
+		if (rebound !== 403) throw new Error(`GET /api/keys with a foreign Host → ${rebound} (expected 403)`);
+		console.log("[smoke-server] web gate: no session → 401, foreign Host → 403");
 	} catch (err) {
 		failed = err;
 	} finally {

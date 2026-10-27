@@ -78,6 +78,11 @@ import { projectView as projectNative } from "../src/core/view.ts";
 import { subscribe } from "../src/core/events.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
 import type { SteerInput, TurnInput } from "../src/core/input-events.ts";
+import { netGuardTransport } from "../src/agent/tools/net-guard.ts";
+
+// Hermetic: the network guard's transport goes through the (stubbed)
+// global fetch; its per-hop target checks and byte cap still apply.
+netGuardTransport.current = (url, init) => globalThis.fetch(url, init);
 
 const JOBS_DIR = path.join(PATHS.data, "jobs");
 
@@ -736,8 +741,13 @@ describe("pdf runner (sources v0)", () => {
 	const originalHome = process.env.HOME;
 	const originalUserProfile = process.env.USERPROFILE;
 
+	/** Granted folders (fs-scope.ts): the fixtures dir, or the learner's
+	 *  folder alone (relative paths resolve against a single grant). */
+	const fixtureScope = { roots: () => [path.dirname(PDF_FIXTURE)], denied: () => [] };
+	const homeScope = { roots: () => [home], denied: () => [] };
+
 	before(() => {
-		home = fs.mkdtempSync(path.join(os.tmpdir(), "lh-pdf-job-home-"));
+		home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "lh-pdf-job-home-")));
 		const target = path.join(home, relativePath);
 		fs.mkdirSync(path.dirname(target), { recursive: true });
 		fs.copyFileSync(PDF_FIXTURE, target);
@@ -771,7 +781,7 @@ describe("pdf runner (sources v0)", () => {
 		trackJob(job.id);
 
 		const delivery = fakeDeliver();
-		const runner = createJobRunner({ chatStore, jobStore, deliver: delivery.deliver });
+		const runner = createJobRunner({ chatStore, jobStore, deliver: delivery.deliver, fsScope: fixtureScope });
 		pdfModelOverride.current = pdfReaderModel();
 		try {
 			await runner.runJob(job.id);
@@ -795,7 +805,7 @@ describe("pdf runner (sources v0)", () => {
 	});
 
 	for (const mode of ["dispatch", "recovery"] as const) {
-		it(`resolves a home-relative PDF from ${mode} input without rewriting history`, async () => {
+		it(`resolves a folder-relative PDF from ${mode} input without rewriting history`, async () => {
 			const chat = chatStore.createChat(`Test: relative PDF ${mode}`);
 			trackChat(chat.id);
 			const toolCallId = `call-pdf-relative-${mode}`;
@@ -806,7 +816,7 @@ describe("pdf runner (sources v0)", () => {
 			const job = jobStore.createJob({ kind: "pdf", chatId: chat.id, toolCallId });
 			trackJob(job.id);
 			const delivery = fakeDeliver();
-			const runner = createJobRunner({ chatStore, jobStore, deliver: delivery.deliver });
+			const runner = createJobRunner({ chatStore, jobStore, deliver: delivery.deliver, fsScope: homeScope });
 			pdfModelOverride.current = pdfReaderModel();
 			try {
 				await runner.runJob(job.id, mode === "dispatch" ? input : undefined);
@@ -850,7 +860,7 @@ describe("pdf runner (sources v0)", () => {
 		trackJob(job.id);
 
 		const delivery = fakeDeliver();
-		const runner = createJobRunner({ chatStore, jobStore, deliver: delivery.deliver });
+		const runner = createJobRunner({ chatStore, jobStore, deliver: delivery.deliver, fsScope: fixtureScope });
 		pdfModelOverride.current = pdfReaderModel();
 		try {
 			await runner.runJob(job.id, { path: badPath, question: "anything" });
@@ -1493,7 +1503,7 @@ describe("prompt composition", () => {
 			const instructions = composeInstructions(kind);
 			assert.ok(instructions.includes("## Learner files"), `${kind} carries the shared learner-files fragment`);
 			assert.ok(instructions.includes("find it yourself with `find`"), `${kind} knows to locate files itself`);
-			assert.ok(instructions.includes("home directory"), `${kind} knows the home-anchored path rule`);
+			assert.ok(instructions.includes("Readable folders"), `${kind} knows file access is confined to granted folders`);
 		}
 		// the agent's OWN fragments compose before the shared appendix
 		// (the reorder's order rule, 2026-09-27: job and method lead)

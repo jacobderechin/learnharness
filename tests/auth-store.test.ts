@@ -7,7 +7,8 @@
  *
  * Pinning: absent/corrupt = {} ("no keys yet"); set/delete round-trip with
  * unknown vars preserved verbatim; the file is ALWAYS mode 0600 (secrets);
- * writes are atomic (tmp+rename — no partial JSON state).
+ * writes are atomic (tmp+rename — no partial JSON state); a file anyone
+ * but its owner could read is refused (security hardening, 2026-10-26).
  */
 
 import assert from "node:assert/strict";
@@ -32,22 +33,22 @@ describe("AuthStore adapter", () => {
 		assert.deepEqual(authStore.authVars(), {});
 	});
 
-	it("set → read round-trip; trim is the CALLER's (server's) job, verbatim here", () => {
-		authStore.setAuthVar("OPENROUTER_API_KEY", "sk-or-v1-abc");
+	it("set → read round-trip; trim is the CALLER's (server's) job, verbatim here", async () => {
+		await authStore.setAuthVar("OPENROUTER_API_KEY", "sk-or-v1-abc");
 		assert.equal(authStore.authVars().OPENROUTER_API_KEY, "sk-or-v1-abc");
 	});
 
-	it("the file is mode 0600 (secrets), also after rewrites", () => {
-		authStore.setAuthVar("DEEPGRAM_API_KEY", "d".repeat(40));
+	it("the file is mode 0600 (secrets), also after rewrites", async () => {
+		await authStore.setAuthVar("DEEPGRAM_API_KEY", "d".repeat(40));
 		const first = fs.statSync(AUTH_FILE).mode & 0o777;
 		assert.equal(first, 0o600);
-		authStore.setAuthVar("DEEPGRAM_API_KEY", "e".repeat(40));
+		await authStore.setAuthVar("DEEPGRAM_API_KEY", "e".repeat(40));
 		assert.equal(fs.statSync(AUTH_FILE).mode & 0o777, 0o600, "rewrite keeps 0600");
 	});
 
-	it("set preserves unknown vars verbatim (forward-compat)", () => {
+	it("set preserves unknown vars verbatim (forward-compat)", async () => {
 		fs.writeFileSync(AUTH_FILE, JSON.stringify({ FUTURE_PLANS_TOKEN: "opaque-xyz", KEEP: "me" }));
-		authStore.setAuthVar("OPENROUTER_API_KEY", "sk-or-v1-new");
+		await authStore.setAuthVar("OPENROUTER_API_KEY", "sk-or-v1-new");
 		const vars = authStore.authVars();
 		assert.equal(vars.FUTURE_PLANS_TOKEN, "opaque-xyz");
 		assert.equal(vars.KEEP, "me");
@@ -63,18 +64,30 @@ describe("AuthStore adapter", () => {
 		assert.deepEqual(authStore.authVars(), { OK: "fine" }, "non-string values drop");
 	});
 
-	it("delete removes just that var; absent delete = silent no-op", () => {
+	it("delete removes just that var; absent delete = silent no-op", async () => {
 		fs.writeFileSync(AUTH_FILE, JSON.stringify({ A: "1", B: "2" }));
-		authStore.deleteAuthVar("A");
+		await authStore.deleteAuthVar("A");
 		assert.deepEqual(authStore.authVars(), { B: "2" });
-		authStore.deleteAuthVar("NOT_THERE");
+		await authStore.deleteAuthVar("NOT_THERE");
 		assert.deepEqual(authStore.authVars(), { B: "2" });
 	});
 
-	it("atomic writes: no tmp leftovers, valid JSON on disk every time", () => {
-		authStore.setAuthVar("OPENROUTER_API_KEY", "sk-or-v1-final");
-		const files = fs.readdirSync(TMP).filter((f) => f.startsWith(".auth.json.tmp"));
+	it("atomic writes: no tmp leftovers, valid JSON on disk every time", async () => {
+		await authStore.setAuthVar("OPENROUTER_API_KEY", "sk-or-v1-final");
+		const files = fs.readdirSync(TMP).filter((f) => f.startsWith(".auth.json.") && f.endsWith(".tmp"));
 		assert.deepEqual(files, [], "no tmp file survives the rename");
 		JSON.parse(fs.readFileSync(AUTH_FILE, "utf-8")); // must parse
+	});
+
+	it("a group/world-readable file is refused — read as no keys", () => {
+		fs.writeFileSync(AUTH_FILE, JSON.stringify({ A: "1" }));
+		fs.chmodSync(AUTH_FILE, 0o644);
+		assert.deepEqual(authStore.authVars(), {});
+		fs.chmodSync(AUTH_FILE, 0o600);
+		assert.deepEqual(authStore.authVars(), { A: "1" });
+	});
+
+	it("web/dev storage posture: plaintext, writable", () => {
+		assert.deepEqual(authStore.storage(), { encrypted: false, writable: true });
 	});
 });

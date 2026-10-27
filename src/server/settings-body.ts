@@ -195,6 +195,19 @@ export function parseAgentSettingsBody(body: unknown): SettingsBodyResult<AgentS
 		}
 		settings.graphTools = graphTools.enabled === undefined ? {} : { enabled: graphTools.enabled };
 	}
+	// Readable folders (security hardening, 2026-10-26): shape only here —
+	// an array of non-empty strings; the route checks each against the
+	// disk (exists, directory, not protected) and stores real paths.
+	if (raw.readableFolders !== undefined) {
+		if (!Array.isArray(raw.readableFolders) || raw.readableFolders.some((f) => typeof f !== "string" || !f.trim())) {
+			return { ok: false, error: "readableFolders must be an array of folder paths" };
+		}
+		if (raw.readableFolders.length) settings.readableFolders = raw.readableFolders.map((f: string) => f.trim());
+	}
+	if (raw.webReaderFallback !== undefined) {
+		if (typeof raw.webReaderFallback !== "boolean") return { ok: false, error: "webReaderFallback must be a boolean" };
+		settings.webReaderFallback = raw.webReaderFallback;
+	}
 	return { ok: true, settings };
 }
 

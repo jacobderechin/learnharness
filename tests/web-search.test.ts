@@ -260,6 +260,11 @@ describe("keyless research dispatch (jobTools)", () => {
 
 import { createProberTools, createTeacherTools } from "../src/agent/tools.ts";
 import type { ChatStore } from "../src/core/ports.ts";
+import { netGuardTransport } from "../src/agent/tools/net-guard.ts";
+
+// Hermetic: the network guard's transport goes through the (stubbed)
+// global fetch; its per-hop target checks and byte cap still apply.
+netGuardTransport.current = (url, init) => globalThis.fetch(url, init);
 
 /** A chat-store stub — the registry factories only CLOSE OVER it at build
  *  time (quiz/plan superRefines read it at execute time, never here). */

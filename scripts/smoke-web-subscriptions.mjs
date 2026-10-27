@@ -10,6 +10,7 @@ import os from "node:os";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -37,6 +38,8 @@ globalThis.fetch = async (input, init) => {
  if (['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) return original(input, init);
  throw new Error('Offline subscription gate forbids external network: ' + url.origin + url.pathname);
 };\n`, { mode: 0o600 });
+const WEB_TOKEN = randomBytes(32).toString("hex");
+const SESSION = `lh_session=${WEB_TOKEN}`;
 // Intentionally an allowlist, not a copy of the calling shell's environment.
 const env = {
 	PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: path.join(profile, "home"),
@@ -44,6 +47,8 @@ const env = {
 	PI_CODING_AGENT_DIR: path.join(profile, "pi"), PI_AGENT_DIR: path.join(profile, "pi"), CLAUDE_CONFIG_DIR: path.join(profile, "claude"), CODEX_HOME: path.join(profile, "codex"),
 	TMPDIR: path.join(profile, "tmp"), LH_AUTH_FILE: path.join(profile, "auth.json"), LH_DATA_DIR: path.join(profile, "data"),
 	NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`, NEXT_TELEMETRY_DISABLED: "1",
+	// The web gate's per-run token (src/server/web-access.ts); every request carries the session.
+	LH_WEB_TOKEN: WEB_TOKEN,
 };
 const saved = {
 	version: 1, hostId: "offline-host", allowBackgroundUse: true, activeId: "offline-account",
@@ -64,9 +69,9 @@ async function run(mode) {
 		version: 1, allowBackgroundUse: true, connectionId: "00000000-0000-4000-8000-000000000001",
 		credential: { type: "oauth", access: id === "xai" ? "fixture-xai-access" : "tid=fixture;proxy-ep=proxy.individual.githubcopilot.com;", refresh: "fixture-refresh", expires: Date.now() + 3600000, ...(id === "github-copilot" ? { availableModelIds: [copilot.id] } : {}) },
 	}), { mode: 0o600 });
-	const port = await freePort(), origin = `http://localhost:${port}`;
+	const port = await freePort(), origin = `http://127.0.0.1:${port}`;
 	let logs = "", exited = false;
-	const child = spawn(process.execPath, [path.join(ROOT, "node_modules/next/dist/bin/next"), mode, "-p", String(port)], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+	const child = spawn(process.execPath, [path.join(ROOT, "node_modules/next/dist/bin/next"), mode, "-H", "127.0.0.1", "-p", String(port)], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
 	const exit = new Promise((resolve) => child.once("exit", () => { exited = true; resolve(); }));
 	try {
 		await timeout(new Promise((resolve, reject) => {
@@ -76,7 +81,7 @@ async function run(mode) {
 		}), 60000, `Next ${mode} readiness timeout.`);
 		const request = (url, command) => fetch(origin + url, {
 			...(command ? { method: "POST", body: JSON.stringify(command) } : {}),
-			headers: { origin, "sec-fetch-site": "same-origin", "x-learnharness-subscriptions": "1", "content-type": "application/json" },
+			headers: { origin, cookie: SESSION, "sec-fetch-site": "same-origin", "x-learnharness-subscriptions": "1", "content-type": "application/json" },
 			signal: AbortSignal.timeout(60000),
 		});
 		// Controls have not been imported through an HTTP request yet.
@@ -85,7 +90,7 @@ async function run(mode) {
 		let state = await (await request("/api/subscriptions")).json();
 		assert.equal(state.chatgpt.accounts[0].email, "fixture@example.invalid"); assert.equal(state.native.length, 2);
 		for (const secret of ["fixture-chatgpt-access", "fixture-chatgpt-refresh", "fixture-id-token", "fixture-xai-access", "fixture-refresh"]) assert(!JSON.stringify(state).includes(secret));
-		const stream = await fetch(origin + "/api/events", { signal: AbortSignal.timeout(60000) });
+		const stream = await fetch(origin + "/api/events", { headers: { cookie: SESSION }, signal: AbortSignal.timeout(60000) });
 		const reader = stream.body.getReader();
 		try {
 			const first = await reader.read(); assert(first.value);
@@ -105,12 +110,12 @@ async function run(mode) {
 			try { assert.equal((await request("/api/models")).status, 200); assert.equal((await request("/api/subscriptions")).status, 200); }
 			finally { await fs.utimes(file, times.atime, times.mtime); }
 		}
-		const navigate = () => fetch(origin + login.browserAction, { redirect: "manual", headers: { "sec-fetch-site": "same-origin" }, signal: AbortSignal.timeout(30000) });
+		const navigate = () => fetch(origin + login.browserAction, { redirect: "manual", headers: { cookie: SESSION, "sec-fetch-site": "same-origin" }, signal: AbortSignal.timeout(30000) });
 		const browser = await navigate(); assert.equal(browser.status, 303, `${mode}: owner/action lost across routes or reload.`);
 		const location = new URL(browser.headers.get("location")); assert.equal(location.origin, "https://auth.openai.com"); assert.equal(new URL(location.searchParams.get("redirect_uri")).hostname, "127.0.0.1");
 		assert.equal((await navigate()).status, 410);
 		assert.equal((await request("/api/subscriptions", { providerId: "chatgpt", op: "cancel" })).status, 200);
-		assert.equal((await fetch(origin + "/api/subscriptions", { method: "POST", headers: { origin: "https://unrelated.invalid", "content-type": "application/json", "x-learnharness-subscriptions": "1" }, body: JSON.stringify({ providerId: "chatgpt", op: "disconnect", id: "offline-account" }) })).status, 403);
+		assert.equal((await fetch(origin + "/api/subscriptions", { method: "POST", headers: { origin: "https://unrelated.invalid", cookie: SESSION, "content-type": "application/json", "x-learnharness-subscriptions": "1" }, body: JSON.stringify({ providerId: "chatgpt", op: "disconnect", id: "offline-account" }) })).status, 403);
 		assert.equal((await request("/api/subscriptions", { providerId: "chatgpt", op: "disconnect", id: "offline-account" })).status, 200);
 		assert.equal((await (await request("/api/models")).json()).providers.find((provider) => provider.id === "chatgpt").keyPresent, false);
 		console.log(`[smoke-web-subscriptions] ${mode}: cold catalogs, safe status, cross-route SSE/consent/disconnect, opaque redirect/replay, CSRF${mode === "dev" ? ", owner retained across source reload" : ""} passed`);

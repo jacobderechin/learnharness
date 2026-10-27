@@ -411,10 +411,10 @@ flowchart LR
         MAIN -->|"loadURL, sandboxed renderer"| REND["Browser renderer (components/)<br/>fetch/WebSocket to own origin only"]
     end
     subgraph OUTSIDE["outside the process"]
-        OR["OpenRouter (BYOK key from auth.json, env-injected — never argv)"]
+        OR["Model providers (BYOK keys from the sealed key vault over IPC — never env, never argv)"]
         DG["Deepgram STT (browser-direct WebSocket)"]
-        GCSE["Google CSE / Jina (researcher tools)"]
-        CHROME["system Chrome (headless: demo verify · SVG render)"]
+        GCSE["search + public web (researcher; SSRF-guarded; Jina opt-in)"]
+        CHROME["browser-service helper / sandboxed system Chrome (demo verify · SVG fallback)"]
         DISK["data/ ledgers (via LH_DATA_DIR seam)"]
     end
     NEXT --> OR
@@ -435,9 +435,26 @@ The Electron main is a launcher + credential/security guard, never a host for te
 
 The packaged desktop renderer gets projected status, public device user codes, prompts and controls over origin-pinned IPC. The privately launched server child receives credential-free catalogs and scoped request auth (including native headers/account endpoints), never refresh tokens. `src/agent/subscription-bridge.ts` rejects framework-only IPC and invalidates stale connection/catalog scopes. `subscription-stream.ts` dispatches directly through native providers, retaining native protocol identity on the wire and restoring logical app identity in assistant history. Persisted routes `chatgpt`, `github-copilot-subscription` and `xai-subscription` are distinct from ordinary API routes and never fall back to them.
 
-For ordinary Next web/dev, `src/server/web-subscriptions.ts` composes these same plain-Node controllers into one lazy process-global credential owner beside configured `AUTH_FILE`. The server injects the private transport through `src/agent/subscription-runtime.ts`; the agent layer never imports the server layer. Existing scoped leases, authority revisions and foreground/background abort listeners work through that transport, without exposing an HTTP token/lease operation. `src/server/web-subscription-http.ts` exposes only same-origin status/control operations. Generic `subscriptions-changed` notifications use the existing SSE notify→fetch channel; opaque one-use browser actions redirect to provider pages without putting authorization URLs in app JSON. Browser adapters preserve the UI bridge contracts; Electron dev uses the web owner with a narrow system-browser opener. Desktop markers fail closed rather than falling back to web credentials. This is the existing shared developer-server trust model, not user authentication or DNS-rebinding protection; LAN behavior is unchanged. Only one server process may own an auth directory. See [development](development.md#subscription-connections-in-webdev) for storage, browser locality and access limitations.
+For ordinary Next web/dev, `src/server/web-subscriptions.ts` composes these same plain-Node controllers into one lazy process-global credential owner beside configured `AUTH_FILE`. The server injects the private transport through `src/agent/subscription-runtime.ts`; the agent layer never imports the server layer. Existing scoped leases, authority revisions and foreground/background abort listeners work through that transport, without exposing an HTTP token/lease operation. `src/server/web-subscription-http.ts` exposes only same-origin status/control operations. Generic `subscriptions-changed` notifications use the existing SSE notify→fetch channel; opaque one-use browser actions redirect to provider pages without putting authorization URLs in app JSON. Browser adapters preserve the UI bridge contracts; Electron dev uses the web owner with a narrow system-browser opener. Desktop markers fail closed rather than falling back to web credentials. Access to the web/dev server itself is gated by §8.2 (loopback Host, per-run session cookie, same-origin writes). Only one server process may own an auth directory. See [development](development.md#subscription-connections-in-webdev) for storage, browser locality and access limitations.
 
 `subscription-request-cycle.ts` is the shared admission/automatic-input recovery state machine; the old ChatGPT module is its compatibility export. Background consent is independent per provider, default ON, with foreground-preserving cancellation and queue ownership retained on no-dispatch. Native usage rejected before dispatch is transiently excluded from helper usage collectors, without adding persisted provenance fields. Catalogs and read-time pricing preserve the selected connection: subscription use displays compact provider labels, API dollars remain dollars, and mixed usage joins both without estimating subscription dollars or claiming detected tiers/allowances.
+
+### 8.2 Security boundaries (hardening, 2026-10-26)
+
+| Boundary | Enforcement | Where |
+|---|---|---|
+| Agent file access | read/ls/find/grep/pdf reach only learner-granted folders (Settings → Agent → Readable folders; none by default), on real paths; a denylist (app data, key store, credentials, keychains, browser profiles, secret-looking names) applies inside grants | `src/agent/tools/fs-scope.ts`, `src/server/fs-access.ts` |
+| Secrets at rest | Desktop: BYOK keys and OAuth tokens sealed with the OS keyring (safeStorage) in owner-only files; no real keyring (Linux `basic_text`) = saving refused. Web/dev: owner-only plaintext `auth.json`, refused if widened | `electron/sealed-file.cjs`, `electron/key-vault.cjs`, `src/store/auth.ts` |
+| Secrets in memory | Keys never enter `process.env`: the server holds the vault snapshot (IPC, loaded in `instrumentation.ts`) and pi-ai resolves auth through `providerEnvSource` | `src/server/keys.ts`, `src/agent/models.ts` |
+| Generated code | Demos/figures load at `https://demo.invalid/` with a no-network CSP; every other request aborted; helper on a throwaway profile with permissions/popups/navigation denied, idle-killed after 2 min; Chrome fallback keeps its OS sandbox; the learner iframe carries the same CSP | `src/core/demo-sandbox.ts`, `src/agent/subagents/headless.ts`, `electron/main.cjs` |
+| HTTP API | Desktop: per-launch capability header on `/api`. Web/dev: 127.0.0.1 bind, loopback Host only, launcher token → HttpOnly SameSite=Strict session cookie on every request, same-origin API writes | `proxy.ts`, `src/server/web-access.ts`, `scripts/web-launch.mjs` |
+| Researcher network | Public addresses only (literal and DNS-resolved, pinned at connect), every redirect re-checked, streaming byte caps; the r.jina.ai fallback is opt-in | `src/agent/tools/net-guard.ts`, `src/agent/tools/web.ts` |
+| Renderer | App CSP (no remote images/scripts, Deepgram socket only); `shell.openExternal` limited to http/https/mailto; trusted-sender checks on every IPC handler | `next.config.ts`, `electron/main.cjs` |
+| Binary | Fuses: NODE_OPTIONS/--inspect ignored, app.asar only with integrity validation, no file:// privileges | `electron-builder.yml` |
+| Updates | Notify-only: GitHub Releases check, link to this repository's release page; nothing downloads or installs itself | `electron/release-check.cjs` |
+| Tool resources | Model regexes run in a time-budgeted worker; file size caps before any read | `src/agent/tools/safe-regex.ts`, `read.ts`, `pdf-ops.ts` |
+
+**Residual risks (accepted, documented):** Windows builds are unsigned; the RunAsNode fuse stays on (the server is spawned through it) and the unpacked server payload is outside asar integrity; the helper's local CDP port is open while demo jobs run (any local process can attach — the 2-minute idle shutdown narrows the window); content the agent reads from granted folders reaches the model provider and can be echoed into research queries; Linux without a keyring cannot save keys (environment variables still work).
 
 ## 9. The foundational invariants — what ALWAYS holds
 

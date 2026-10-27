@@ -1,7 +1,6 @@
 "use strict";
 const fs = require("node:fs/promises");
-const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { secretJsonFile } = require("./sealed-file.cjs");
 
 const PROVIDERS = ["github-copilot", "xai"];
 const failure = (code) => Object.assign(new Error(code), { code });
@@ -31,33 +30,23 @@ function validateState(providerId, state) {
 	if (hasId) validateCredential(providerId, state.credential);
 	return state;
 }
-/** Main-process-only, one independent owner-only file per provider. No recovery writes on corruption. */
-function fileStore(file, providerId, io = fs) {
+/** Main-process-only, one independent owner-only file per provider —
+ *  sealed with the OS keyring when a codec is given (sealed-file.cjs).
+ *  No recovery writes on corruption. */
+function fileStore(file, providerId, io = fs, codec = null) {
+	const secret = secretJsonFile(file, { codec, io });
 	return {
 		async read() {
-			try {
-				const stat = await io.lstat(file);
-				if (!stat.isFile() || (process.platform !== "win32" && ((stat.mode & 0o077) !== 0 || (typeof process.getuid === "function" && stat.uid !== process.getuid())))) throw failure("storage");
-				return validateState(providerId, JSON.parse(await io.readFile(file, "utf8")));
-			}
-			catch (error) { if (error.code === "ENOENT") return { version: 1, allowBackgroundUse: true }; throw failure("storage"); }
+			let raw;
+			try { raw = await secret.read(); }
+			catch (error) { throw failure(error?.code === "keyring" ? "keyring" : "storage"); }
+			if (raw === null) return { version: 1, allowBackgroundUse: true };
+			try { return validateState(providerId, raw); } catch { throw failure("storage"); }
 		},
 		async write(state) {
 			validateState(providerId, state);
-			const temporary = `${file}.${randomUUID()}.tmp`;
-			let handle;
-			try {
-				await io.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-				handle = await io.open(temporary, "wx", 0o600);
-				await handle.writeFile(`${JSON.stringify(state)}\n`);
-				await handle.sync(); await handle.close(); handle = null;
-				await io.rename(temporary, file);
-				if (process.platform !== "win32") {
-					const directory = await io.open(path.dirname(file), "r");
-					try { await directory.sync(); } finally { await directory.close(); }
-				}
-			} catch { throw failure("storage"); }
-			finally { await handle?.close().catch(() => {}); await io.unlink(temporary).catch(() => {}); }
+			try { await secret.write(state); }
+			catch (error) { throw failure(error?.code === "keyring" ? "keyring" : "storage"); }
 		},
 	};
 }

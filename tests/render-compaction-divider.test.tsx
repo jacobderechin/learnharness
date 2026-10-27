@@ -63,8 +63,8 @@ describe("not viewable (owner, release polish 2026-10-06)", () => {
 			renderToStaticMarkup(<CompactionMomentDivider data={data} />),
 			renderToStaticMarkup(<CompactionCutDivider data={data} />),
 		]) {
-			assert.ok(!html.includes("<button"), INERT[0]);
-			assert.ok(!html.includes("cursor-pointer"), INERT[0]);
+			assert.ok(!html.includes("<button"), INERT[0]!);
+			assert.ok(!html.includes("cursor-pointer"), INERT[0]!);
 		}
 	});
 

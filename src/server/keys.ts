@@ -2,26 +2,20 @@
  * The auth/keys composition (auth-keys wave, 2026-09-19): the server-side
  * key manager behind GET/PUT/DELETE /api/keys.
  *
- * THE ENV SEAM (the architecture keystone): every consumer — models.ts's
- * openRouterApiKey(), the sub-agents, web.ts, the STT route — reads
- * process.env directly, and the agent layer may not import the store
- * layer. Instead of rewiring five consumers across lanes, the store
- * REFLECTS itself into the child's env: at boot (idempotent, anchored on
- * globalThis like the extraction registry) every file var UNSET in the
- * real env is fill-gapped into process.env, and each save/delete updates
- * file + env together. Keys therefore take effect immediately — no restart
- * — which is also why main.cjs's old spawn-time injection HAD to retire:
- * an env copy made at spawn would shadow every settings-page change until
- * restart (env wins over file).
+ * KEYS NEVER ENTER THE ENVIRONMENT (security hardening, 2026-10-26): the
+ * store (src/store/auth.ts — the keyring-sealed desktop vault, or the
+ * owner-only dev file) is read at call time through keyValue(), and the
+ * model engines receive keys through pi-ai's AuthContext seam
+ * (providerEnvValue → agent/models.ts providerEnvSource), not process.env.
+ * Saving a key still takes effect on the next request with no restart.
  *
  * PRECEDENCE (owner decision): real environment variables (incl.
- * .env.local in dev) always win over the file. Boot-time real-env vars
- * are snapshotted once per process and never mutated; a PUT to one of
- * them persists to the file (for when the env goes away) and the status
- * honestly reports shadowedByEnv — the page explains why the saved key
- * is not the live one.
+ * .env.local in dev) always win over the store. Boot-time real-env vars
+ * are snapshotted once per process; a PUT to one of them persists to the
+ * store (for when the env goes away) and the status honestly reports
+ * shadowedByEnv — the page explains why the saved key is not the live one.
  *
- * Unknown vars in the file are preserved verbatim and surfaced as
+ * Unknown vars in the store are preserved verbatim and surfaced as
  * generic status rows (no catalog form to edit through — only curated
  * keys have shapes and docs; core/auth-keys.ts).
  *
@@ -29,14 +23,8 @@
  * makes every env key invisible APP-WIDE — the exact new-user simulation
  * (a fresh empty data dir + the switch = zero keys, zero federated
  * providers, setup stage 1). Under the switch real env vars are DELETED
- * from the process (not merely ignored by this seam): pi-ai resolves
- * provider keys from process.env NATIVELY at every request
- * (auth/context.js's defaultProviderAuthContext reads live env), so
- * deletion is the one mechanism that hides keys from every consumer —
- * model engines included. Only the file store (auth.json) counts; the
- * fill-gap still reflects file keys so a fresh user can add keys
- * mid-session and the engines see them with no restart. Unset switch =
- * today's behavior, byte-for-byte.
+ * from the process at boot (not merely ignored by this seam), so no
+ * consumer can see them; only the store counts. Unset switch = env wins.
  */
 
 import {
@@ -52,23 +40,23 @@ import {
 	validateKeyShape,
 } from "../core/auth-keys.ts";
 import { authStore } from "../store/auth.ts";
+import type { AuthStorageState } from "../core/ports.ts";
 import { isSubscriptionProvider, subscriptionConnected } from "../agent/subscription-connections.ts";
+import { providerEnvSource } from "../agent/models.ts";
 
 // The once-per-process boot record — globalThis anchor (HMR re-imports the
-// module; the snapshot must not re-run and misread fill-gapped vars as real
-// env). Same pattern as globalThis.__lhExtractionRuns.
+// module; the snapshot must run once). Same pattern as
+// globalThis.__lhExtractionRuns.
 interface AuthBoot {
-	/** Vars that were in the REAL env at first init — env precedence's
-	 *  untouchable set. Fill-gapped vars are everything else we set. */
+	/** Vars that were in the REAL env at first init — env precedence's set. */
 	realEnv: Set<string>;
-	/** Vars WE put into process.env (the file's reflection) — deletable. */
-	fillGap: Set<string>;
+	initialized: boolean;
 }
 const BOOT_KEY = Symbol.for("lh.authBoot");
 
 function boot(): AuthBoot {
 	const g = globalThis as Record<symbol, AuthBoot | undefined>;
-	if (!g[BOOT_KEY]) g[BOOT_KEY] = { realEnv: new Set(), fillGap: new Set() };
+	if (!g[BOOT_KEY]) g[BOOT_KEY] = { realEnv: new Set(), initialized: false };
 	return g[BOOT_KEY];
 }
 
@@ -94,43 +82,30 @@ export function envKeysIgnored(): boolean {
 }
 
 /**
- * The boot fill-gap — idempotent. First call snapshots which managed names
- * are real env; later calls (HMR re-import, or after a hand-edit) only fill
- * vars still unset in the env, so a var deleted through the API never
- * resurrects (its file entry is gone too).
+ * The boot snapshot — idempotent. First call records which managed names
+ * are real env (env precedence); under the fresh-user switch every managed
+ * env var is deleted instead (re-run on every call — a reintroduced var
+ * never resurrects) and nothing counts as env.
  */
 export function initAuthEnv(): void {
 	const record = boot();
-	const fileVars = authStore.authVars();
 	const managed = new Set<string>([
-		...Object.keys(fileVars),
+		...Object.keys(authStore.authVars()),
 		...AUTH_KEYS.map((k) => k.id),
 		// Provider env vars are managed names too (provider-keys interlude):
-		// an env-exported OPENAI_API_KEY with a file copy gets honest shadow
-		// semantics, exactly like the curated vars.
+		// an env-exported OPENAI_API_KEY with a stored copy gets honest
+		// shadow semantics, exactly like the curated vars.
 		...AUTH_PROVIDER_KEYS.map((p) => p.envVar),
 	]);
 	if (envKeysIgnored()) {
-		// THE FRESH-USER SWITCH: delete every managed env var (re-run on
-		// every call — a reintroduced var never resurrects). realEnv stays
-		// EMPTY (nothing counts as env); the fill-gap below then reflects
-		// auth.json keys so engines still see mid-session additions.
-		for (const name of managed) {
-			delete process.env[name];
-		}
-	} else if (record.realEnv.size === 0 && record.fillGap.size === 0) {
-		// First init in this process: what's already in the env is REAL env.
+		for (const name of managed) delete process.env[name];
+		record.realEnv.clear();
+	} else if (!record.initialized) {
 		for (const name of managed) {
 			if (process.env[name] !== undefined) record.realEnv.add(name);
 		}
 	}
-	for (const [name, value] of Object.entries(fileVars)) {
-		if (!isManagedName(name)) continue;
-		if (process.env[name] === undefined) {
-			process.env[name] = value;
-			record.fillGap.add(name);
-		}
-	}
+	record.initialized = true;
 }
 
 /** Is this env-var name one the keys system manages (curated, provider,
@@ -161,9 +136,7 @@ export function resolveKeyStatuses(
 		const envValue = env[id];
 		const fileValue = fileVars[id];
 		const isRealEnv = realEnv.has(id);
-		// Env wins: the live value is the env's when set (real or reflected —
-		// post fill-gap the file's values LIVE in env, so realEnv is what
-		// distinguishes a REAL env var from the store's own reflection).
+		// Env wins: the live value is the env's when set, else the store's.
 		const live = envValue !== undefined ? envValue : fileValue;
 		rows.push({
 			id,
@@ -206,41 +179,59 @@ export function providerKeyPresent(provider: string): boolean {
 	return info ? keyValue(info.envVar) !== undefined : true;
 }
 
+/** The pi-ai AuthContext lookup (agent/models.ts providerEnvSource):
+ *  managed key names resolve through keyValue (env-first, then the store —
+ *  never a process.env copy of a stored key); every other name (regional
+ *  config, endpoints) is plain process.env, as pi-ai would read it. */
+export function providerEnvValue(name: string): string | undefined {
+	const value = isManagedName(name) ? keyValue(name) : process.env[name];
+	return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+/** The key store's at-rest posture for the keys page (encrypted with the
+ *  OS keyring on desktop; writable = a real keyring exists). */
+export function keyStorage(): AuthStorageState {
+	return authStore.storage();
+}
+
 /**
  * Save one key (PUT). Shape gate first (owner decision: bad pastes are
- * 400s, never stored), then the file write, then the env reflection. A
- * var that the REAL env owns is not reflected (env wins — the status row
- * reports shadowedByEnv so the page can explain it).
+ * 400s, never stored), then the store write. A var the REAL env owns is
+ * stored but shadowed — the status row reports shadowedByEnv so the page
+ * can explain it. A store refusal (no OS keyring) is a 503 with its text.
  */
-export function saveKey(id: string, value: string): { ok: true; status: AuthKeyStatus } | { ok: false; error: string } {
+export async function saveKey(
+	id: string,
+	value: string,
+): Promise<{ ok: true; status: AuthKeyStatus } | { ok: false; error: string; status: 400 | 503 }> {
 	const shape = isProviderEnvVar(id) ? genericProviderKeyGuard(id, value) : validateKeyShape(id, value);
-	if (!shape.ok) return { ok: false, error: shape.error };
-	const trimmed = value.trim();
-	authStore.setAuthVar(id, trimmed);
-	const record = boot();
-	if (!record.realEnv.has(id)) {
-		process.env[id] = trimmed;
-		record.fillGap.add(id);
+	if (!shape.ok) return { ok: false, error: shape.error, status: 400 };
+	try {
+		await authStore.setAuthVar(id, value.trim());
+	} catch (err) {
+		return { ok: false, error: err instanceof Error ? err.message : String(err), status: 503 };
 	}
 	// validateKeyShape guarantees catalog membership, so the row exists.
 	return { ok: true, status: keyStatuses().find((s) => s.id === id)! };
 }
 
 /**
- * Remove one key (DELETE): gone from the file always; gone from the env
- * only when the env copy was OURS (fill-gap) — a real env var stays (env
+ * Remove one key (DELETE): gone from the store; a real env var stays (env
  * wins) and the status shows the key still present from env.
  */
-export function deleteKey(id: string): AuthKeyStatus {
-	authStore.deleteAuthVar(id);
-	const record = boot();
-	if (record.fillGap.has(id) && !record.realEnv.has(id)) {
-		delete process.env[id];
-		record.fillGap.delete(id);
+export async function deleteKey(
+	id: string,
+): Promise<{ ok: true; status: AuthKeyStatus } | { ok: false; error: string; status: 503 }> {
+	try {
+		await authStore.deleteAuthVar(id);
+	} catch (err) {
+		return { ok: false, error: err instanceof Error ? err.message : String(err), status: 503 };
 	}
-	return keyStatuses().find((s) => s.id === id)!;
+	return { ok: true, status: keyStatuses().find((s) => s.id === id)! };
 }
 
-// Reflect the file into the env at first import (idempotent; the module is
-// imported by every route/handler path that touches keys).
+// Snapshot the env at first import (idempotent; the module is imported by
+// every route/handler path that touches keys), and hand pi-ai's auth
+// lookup to the store-backed resolver.
 initAuthEnv();
+providerEnvSource.current = providerEnvValue;

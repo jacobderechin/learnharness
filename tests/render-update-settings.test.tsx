@@ -31,7 +31,7 @@ function deferred<T>() {
 
 function bridge(initial = state(), snapshot = Promise.resolve(initial)) {
 	const listeners = new Set<(value: UpdateState) => void>();
-	const calls = { check: 0, install: 0, get: 0 };
+	const calls = { check: 0, open: 0, get: 0 };
 	let onOpen: ((section: string) => void) | null = null;
 	let checkFailure: Error | null = null;
 	window.lh = {
@@ -39,7 +39,7 @@ function bridge(initial = state(), snapshot = Promise.resolve(initial)) {
 		getUpdateState: () => { calls.get++; return snapshot; },
 		onUpdateStatus: cb => { listeners.add(cb); return () => { listeners.delete(cb); }; },
 		checkForUpdates: async () => { calls.check++; if (checkFailure) throw checkFailure; },
-		installUpdate: () => { calls.install++; },
+		openReleasePage: async () => { calls.open++; },
 		onOpenSettings: cb => { onOpen = cb; return () => { onOpen = null; }; },
 	};
 	return {
@@ -81,12 +81,10 @@ describe("version and contextual copy", () => {
 		assert.equal(updateStatusText(state()), null);
 		assert.equal(updateStatusText(state({ status: "disabled" })), null);
 		assert.equal(updateStatusText(state({ status: "checking" })), "Checking for updates…");
-		assert.equal(updateStatusText(state({ status: "downloading", version: "0.3.8" })), "Downloading version 0.3.8…");
 		assert.equal(updateStatusText(state({ status: "up-to-date" })), "No newer version was found at the last check.");
-		assert.equal(updateStatusText(state({ status: "downloaded", version: "0.3.8" })), "Version 0.3.8 is ready. It will install when you quit the app.");
+		assert.equal(updateStatusText(state({ status: "available", version: "0.3.8" })), "Version 0.3.8 is available. Download it from the release page.");
+		assert.equal(updateStatusText(state({ status: "available" })), "A newer version is available. Download it from the release page.");
 		assert.equal(updateStatusText(state({ status: "error" })), "Couldn’t check for updates. Try again later.");
-		assert.equal(updateStatusText(state({ status: "downloading" })), "Downloading an update…");
-		assert.equal(updateStatusText(state({ status: "downloaded" })), "An update is ready. It will install when you quit the app.");
 	});
 });
 
@@ -122,18 +120,15 @@ describe("General update rows", () => {
 		await click(q(host, "update-check")); assert.equal(b.calls.check, 1);
 	});
 
-	it("checking/downloading shows context and disables only the UI button; ready offers Restart", async () => {
+	it("checking disables only the UI button; available offers Download (the release page, nothing installs)", async () => {
 		const b = bridge(); const host = await mount(<UpdateSettings {...props} />);
 		await b.push(state({ status: "checking", revision: 1 }));
 		assert.equal((q(host, "update-check") as HTMLButtonElement).disabled, true);
 		assert.equal(q(host, "update-check")!.getAttribute("aria-busy"), "true");
 		assert.equal(q(host, "update-status")!.textContent, "Checking for updates…");
-		await b.push(state({ status: "downloading", version: "0.3.8", revision: 2 }));
-		assert.equal(q(host, "update-status")!.textContent, "Downloading version 0.3.8…");
-		assert.equal((q(host, "update-check") as HTMLButtonElement).disabled, true);
-		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 3 }));
-		assert.equal(q(host, "update-check"), null); assert.ok(q(host, "update-status")!.textContent!.includes("quit the app"));
-		await click(q(host, "update-restart")); assert.equal(b.calls.install, 1);
+		await b.push(state({ status: "available", version: "0.3.8", revision: 2 }));
+		assert.equal(q(host, "update-check"), null); assert.ok(q(host, "update-status")!.textContent!.includes("release page"));
+		await click(q(host, "update-download")); assert.equal(b.calls.open, 1);
 	});
 
 	it("up-to-date and failure statuses allow another manual check", async () => {
@@ -153,29 +148,29 @@ describe("General update rows", () => {
 		assert.ok(!host.textContent!.includes("sensitive"));
 	});
 
-	it("late Settings and banner subscribers recover the staged update without an event", async () => {
-		const b = bridge(state({ status: "downloaded", version: "0.3.8", revision: 5 }));
+	it("late Settings and banner subscribers recover an available update without an event", async () => {
+		const b = bridge(state({ status: "available", version: "0.3.8", revision: 5 }));
 		const host = await mount(<><UpdateSettings {...props} /><UpdateBanner /></>);
-		assert.ok(q(host, "update-restart")); assert.ok(q(host, "update-banner"));
+		assert.ok(q(host, "update-download")); assert.ok(q(host, "update-banner"));
 		assert.ok(q(host, "update-banner")!.textContent!.includes("0.3.8"));
-		await click(q(host, "update-banner")!.querySelector("button")); assert.equal(b.calls.install, 1);
+		await click(q(host, "update-banner")!.querySelector("button")); assert.equal(b.calls.open, 1);
 		assert.equal(b.calls.check, 0);
 	});
 
 	it("a delayed older snapshot cannot overwrite a newer push in Settings or the banner", async () => {
 		const snapshot = deferred<UpdateState>(); const b = bridge(state(), snapshot.promise);
 		const host = await mount(<><UpdateSettings {...props} /><UpdateBanner /></>);
-		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 4 }));
+		await b.push(state({ status: "available", version: "0.3.8", revision: 4 }));
 		await act(async () => { snapshot.resolve(state({ status: "checking", revision: 3 })); });
-		assert.ok(q(host, "update-restart")); assert.ok(q(host, "update-banner"));
+		assert.ok(q(host, "update-download")); assert.ok(q(host, "update-banner"));
 	});
 
 	it("snapshot rejection cannot erase an already received event and late callbacks are unsubscribed", async () => {
 		const snapshot = deferred<UpdateState>(); const b = bridge(state(), snapshot.promise);
 		const host = await mount(<UpdateSettings {...props} />);
-		await b.push(state({ status: "downloaded", version: "0.3.8", revision: 1 }));
+		await b.push(state({ status: "available", version: "0.3.8", revision: 1 }));
 		await act(async () => { snapshot.reject(new Error("IPC disconnected")); });
-		assert.ok(q(host, "update-restart"));
+		assert.ok(q(host, "update-download"));
 		const { root } = roots.pop()!; await act(async () => { root.unmount(); }); host.remove();
 		assert.equal(b.listeners.size, 0);
 	});

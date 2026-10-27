@@ -213,12 +213,22 @@ export interface PromptOverrideStore {
  * too (src/server/keys.ts). Unknown vars ride along verbatim.
  */
 export interface AuthStore {
-	/** The whole map — absent or corrupt file = {} ("no keys yet", the
+	/** The whole map — absent or corrupt store = {} ("no keys yet", the
 	 *  documented first-boot state). Never throws. */
 	authVars(): Record<string, string>;
-	/** Set one VAR (atomic write, mode 0600 always, other vars preserved). */
-	setAuthVar(name: string, value: string): void;
+	/** Set one VAR (other vars preserved). Rejects with a user-facing
+	 *  message when the store refuses (no OS keyring on desktop). */
+	setAuthVar(name: string, value: string): Promise<void>;
 	/** Remove one VAR if present (absent = no-op, still a silent success). */
-	deleteAuthVar(name: string): void;
+	deleteAuthVar(name: string): Promise<void>;
+	/** Where keys live: encrypted with the OS keyring (desktop), and
+	 *  whether saving is possible (false = no real keyring). */
+	storage(): AuthStorageState;
+}
+
+/** The key store's at-rest posture (security hardening, 2026-10-26). */
+export interface AuthStorageState {
+	encrypted: boolean;
+	writable: boolean;
 }
 

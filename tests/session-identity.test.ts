@@ -153,7 +153,7 @@ describe("native app and conversation identity", { concurrency: false }, () => {
 				apiKey, sessionId, identity: APP_IDENTITY,
 				onPayload: (value) => { payload = value; throw new Error("CLOSED: payload captured"); },
 			}).result();
-			assert.ok(payload, result.errorMessage);
+			assert.ok(payload, result.errorMessage ?? "payload not captured");
 			assert.equal((payload as { prompt_cache_key: string }).prompt_cache_key, Array.from(sessionId).slice(0, 64).join(""));
 		}
 	}));

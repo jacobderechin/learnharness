@@ -5,17 +5,20 @@ import { Button } from "@/components/ui/button";
 import { BrailleSpinner } from "@/components/braille-spinner";
 import { SettingsRow, Toggle } from "./controls.tsx";
 
-/** Observational snapshot from electron/main.cjs; never updater permission. */
+/** Observational snapshot from electron/main.cjs (notify-only update
+ *  checks — nothing downloads or installs itself). */
 export type UpdateState = {
-	status: "idle" | "checking" | "downloading" | "up-to-date" | "downloaded" | "error" | "disabled";
+	status: "idle" | "checking" | "available" | "up-to-date" | "error" | "disabled";
 	version: string | null;
+	/** The newer version's release page (only when available). */
+	url?: string | null;
 	revision: number;
 };
 
 export const APP_VERSION = process.env.LH_VERSION ?? "";
 const HOMEPAGE = process.env.LH_HOMEPAGE ?? "";
-export const MANUAL_UPDATE_HINT = "Checking downloads available updates. Downloaded updates install when you quit the app.";
-export const AUTO_UPDATE_HINT = "Check at startup and every 24 hours. Turning this off does not stop updates already in progress or ready to install.";
+export const MANUAL_UPDATE_HINT = "Checks GitHub for a newer release. Nothing downloads or installs automatically.";
+export const AUTO_UPDATE_HINT = "Check for a newer release at startup and every 24 hours.";
 const UPDATE_ERROR = "Couldn’t check for updates. Try again later.";
 
 /** Subscribe before requesting the snapshot. IPC replies and pushes can
@@ -47,9 +50,8 @@ export function useUpdateState() {
 export function updateStatusText(state: UpdateState | null): string | null {
 	switch (state?.status) {
 		case "checking": return "Checking for updates…";
-		case "downloading": return state.version ? `Downloading version ${state.version}…` : "Downloading an update…";
+		case "available": return `${state.version ? `Version ${state.version}` : "A newer version"} is available. Download it from the release page.`;
 		case "up-to-date": return "No newer version was found at the last check.";
-		case "downloaded": return `${state.version ? `Version ${state.version}` : "An update"} is ready. It will install when you quit the app.`;
 		case "error": return UPDATE_ERROR;
 		default: return null;
 	}
@@ -72,8 +74,8 @@ export function UpdateSettings({
 	const [checkFailed, setCheckFailed] = useState(false);
 	useEffect(() => setCheckFailed(false), [state]);
 	const active = state !== null && state.status !== "disabled";
-	const busy = state?.status === "checking" || state?.status === "downloading";
-	const status = state?.status === "downloaded" ? updateStatusText(state)
+	const busy = state?.status === "checking";
+	const status = state?.status === "available" ? updateStatusText(state)
 		: failed || checkFailed ? UPDATE_ERROR : updateStatusText(state);
 	const releaseNotes = version && homepage ? `${homepage}/releases/tag/v${version}` : null;
 	const check = () => {
@@ -94,17 +96,17 @@ export function UpdateSettings({
 					</>
 				}
 			>
-				{active && (state.status === "downloaded" ? (
-					<Button type="button" size="xs" className="cursor-pointer" data-testid="update-restart" onClick={() => window.lh?.installUpdate?.()}>Restart</Button>
+				{active && (state.status === "available" ? (
+					<Button type="button" size="xs" className="cursor-pointer" data-testid="update-download" onClick={() => void window.lh?.openReleasePage?.()}>Download</Button>
 				) : (
 					<Button type="button" size="xs" variant="outline" className="cursor-pointer disabled:cursor-not-allowed" data-testid="update-check" disabled={busy} aria-busy={busy} onClick={check}>
-						{busy && <BrailleSpinner label={state.status === "downloading" ? "Downloading update" : "Checking for updates"} />}
+						{busy && <BrailleSpinner label="Checking for updates" />}
 						Check for updates
 					</Button>
 				))}
 			</SettingsRow>
 			{active && (
-				<SettingsRow label="Automatic updates" hint={AUTO_UPDATE_HINT} testid="row-auto-update">
+				<SettingsRow label="Automatic update checks" hint={AUTO_UPDATE_HINT} testid="row-auto-update">
 					<Toggle checked={autoUpdate} label="auto update" onChange={onAutoUpdateChange} />
 				</SettingsRow>
 			)}

@@ -8,18 +8,20 @@ import {
 	formatSize,
 	MAX_OUTPUT_BYTES,
 	matchGlob,
-	resolveSourcePath,
 	walkFiles,
 } from "./fs-shared.ts";
+import { deniedPrefixes, isDeniedPath, searchBases, type FsScope } from "./fs-scope.ts";
 
 /**
  * The find tool — sources v1 (2026-09-19): pi's dist/core/tools/find.js
  * ported to a pure-Node walker (pi shells out to fd; no binaries here —
  * Electron/Windows-safe, fs-shared.ts). Schemas, fd's glob semantics
  * (basename-mode without a slash, implied deep prefix with one), relativized output,
- * and the notice formats are pi-verbatim; the deltas: home-anchored
- * default, .gitignore replaced by hard noise exclusions, and a wall-clock
- * timeout with partial results. Read-only by construction.
+ * and the notice formats are pi-verbatim; the deltas: the search is
+ * confined to the learner-granted folders (fs-scope.ts — no path walks all
+ * of them), protected paths are pruned, .gitignore is replaced by hard
+ * noise exclusions, and a wall-clock timeout yields partial results.
+ * Read-only by construction.
  */
 
 const DEFAULT_LIMIT = 1000;
@@ -29,59 +31,73 @@ const findInput = Type.Object({
 		minLength: 1,
 		description: "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'",
 	}),
-	path: Type.Optional(Type.String({ description: "Directory to search in (default: the learner's home directory)" })),
+	path: Type.Optional(Type.String({ description: "Directory to search in (default: every readable folder)" })),
 	limit: Type.Optional(Type.Integer({ description: "Maximum number of results (default: 1000)" })),
 });
 
-export const findTool: AgentTool<typeof findInput> = {
-	name: "find",
-	label: "find",
-	description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Ignores node_modules, .git, and Library directories. Output is truncated to ${DEFAULT_LIMIT} results or ${formatSize(MAX_OUTPUT_BYTES)} (whichever is hit first).`,
-	parameters: findInput,
-	execute: serverExecute("find", findInput, async (input, ctx) => {
-		if (ctx?.signal?.aborted) return "Operation aborted";
-		const searchPath = resolveSourcePath(input.path);
-		let stat;
-		try {
-			stat = await fs.stat(searchPath);
-		} catch {
-			throw new Error(`Path not found: ${searchPath}`);
-		}
-		if (!stat.isDirectory()) throw new Error(`Not a directory: ${searchPath}`);
-
-		const effectiveLimit = input.limit ?? DEFAULT_LIMIT;
-		const matches: string[] = [];
-		let limitReached = false;
-		const { timedOut, aborted } = await walkFiles(
-			searchPath,
-			(filePath) => {
-				const rel = path.relative(searchPath, filePath).split(path.sep).join("/");
-				if (!matchGlob(rel, input.pattern)) return false;
-				if (matches.length >= effectiveLimit) {
-					limitReached = true;
-					return true; // stop the walk
+export function findToolFor(scope: FsScope): AgentTool<typeof findInput> {
+	return {
+		name: "find",
+		label: "find",
+		description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Ignores node_modules, .git, and Library directories. Output is truncated to ${DEFAULT_LIMIT} results or ${formatSize(MAX_OUTPUT_BYTES)} (whichever is hit first).`,
+		parameters: findInput,
+		execute: serverExecute("find", findInput, async (input, ctx) => {
+			if (ctx?.signal?.aborted) return "Operation aborted";
+			const { bases, relative } = await searchBases(scope, input.path);
+			for (const base of bases) {
+				let stat;
+				try {
+					stat = await fs.stat(base);
+				} catch {
+					throw new Error(`Path not found: ${base}`);
 				}
-				matches.push(rel);
-				return false;
-			},
-			ctx?.signal,
-		);
+				if (!stat.isDirectory()) throw new Error(`Not a directory: ${base}`);
+			}
 
-		if (aborted) {
-			return matches.length > 0
-				? `${matches.join("\n")}\n\n[search aborted — partial results]`
-				: "Search aborted before any results.";
-		}
-		if (matches.length === 0 && !limitReached) {
-			return timedOut
-				? `Search timed out after 10s with no matches yet. Narrow the search to a subdirectory.`
-				: "No files found matching pattern";
-		}
-		const { content, truncated } = capOutput(matches);
-		const notices: string[] = [];
-		if (limitReached || matches.length >= effectiveLimit) notices.push(`${effectiveLimit} results limit reached`);
-		if (truncated) notices.push(`${formatSize(MAX_OUTPUT_BYTES)} limit reached`);
-		if (timedOut) notices.push("search timed out after 10s — partial results, narrow the directory");
-		return notices.length > 0 ? `${content}\n\n[${notices.join(". ")}]` : content;
-	}),
-};
+			const denied = await deniedPrefixes(scope);
+			const exclude = (full: string) => isDeniedPath(full, denied);
+			const effectiveLimit = input.limit ?? DEFAULT_LIMIT;
+			const matches: string[] = [];
+			let limitReached = false;
+			let timedOut = false;
+			let aborted = false;
+			for (const base of bases) {
+				const result = await walkFiles(
+					base,
+					(filePath) => {
+						const rel = path.relative(base, filePath).split(path.sep).join("/");
+						if (!matchGlob(rel, input.pattern)) return false;
+						if (matches.length >= effectiveLimit) {
+							limitReached = true;
+							return true; // stop the walk
+						}
+						matches.push(relative ? rel : filePath);
+						return false;
+					},
+					ctx?.signal,
+					exclude,
+				);
+				timedOut ||= result.timedOut;
+				aborted ||= result.aborted;
+				if (limitReached || timedOut || aborted) break;
+			}
+
+			if (aborted) {
+				return matches.length > 0
+					? `${matches.join("\n")}\n\n[search aborted — partial results]`
+					: "Search aborted before any results.";
+			}
+			if (matches.length === 0 && !limitReached) {
+				return timedOut
+					? `Search timed out after 10s with no matches yet. Narrow the search to a subdirectory.`
+					: "No files found matching pattern";
+			}
+			const { content, truncated } = capOutput(matches);
+			const notices: string[] = [];
+			if (limitReached || matches.length >= effectiveLimit) notices.push(`${effectiveLimit} results limit reached`);
+			if (truncated) notices.push(`${formatSize(MAX_OUTPUT_BYTES)} limit reached`);
+			if (timedOut) notices.push("search timed out after 10s — partial results, narrow the directory");
+			return notices.length > 0 ? `${content}\n\n[${notices.join(". ")}]` : content;
+		}),
+	};
+}

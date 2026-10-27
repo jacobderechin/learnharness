@@ -45,7 +45,7 @@ test("desktop capability injects only trusted app mainframe exact-origin API req
 	assert.equal(desktopAPIHeaders(details, origin, null, [win])[HEADER], undefined, "externally launched desktop dev receives no packaged capability");
 });
 
-test("all methods fail closed for desktop missing/wrong secret; API-only matcher covers SSE/settings/spending", () => {
+test("all methods fail closed for desktop missing/wrong secret; the matcher covers every page and API route", () => {
 	assert(desktopAPIAuthorized(new Headers(), {}), "browser-only API-key mode unchanged");
 	assert(!desktopAPIAuthorized(new Headers({ [HEADER]: secret }), { LH_DESKTOP_SERVER: "1" }), "missing server secret must not disable authorization");
 	for (const value of [undefined, "", "wrong", secret + ", " + secret]) {
@@ -53,7 +53,9 @@ test("all methods fail closed for desktop missing/wrong secret; API-only matcher
 	}
 	assert(desktopAPIAuthorized(new Headers({ [HEADER]: secret }), { LH_DESKTOP_SERVER: "1", LH_DESKTOP_API_SECRET: secret }));
 	for (const pathname of ["/api/events", "/api/chat", "/api/settings/models", "/api/chats/scratch/markdown"]) assert(unstable_doesProxyMatch({ config, nextConfig: {}, url: origin + pathname }));
-	assert(!unstable_doesProxyMatch({ config, nextConfig: {}, url: origin + "/chat/new" }));
+	// Pages are gated too since the web/dev hardening (2026-10-26); only Next's build assets skip the proxy.
+	assert(unstable_doesProxyMatch({ config, nextConfig: {}, url: origin + "/chat/new" }));
+	assert(!unstable_doesProxyMatch({ config, nextConfig: {}, url: origin + "/_next/static/chunks/main.js" }));
 	const originalMarker = process.env.LH_DESKTOP_SERVER;
 	const originalSecret = process.env.LH_DESKTOP_API_SECRET;
 	try {
@@ -63,6 +65,7 @@ test("all methods fail closed for desktop missing/wrong secret; API-only matcher
 			assert.equal(proxy(new NextRequest(origin + "/api/settings", { method })).status, 403);
 			assert.equal(proxy(new NextRequest(origin + "/api/settings", { method, headers: { [HEADER]: secret } })).headers.get("x-middleware-next"), "1");
 		}
+		assert.equal(proxy(new NextRequest(origin + "/chat/new")).headers.get("x-middleware-next"), "1", "desktop pages are the static shell");
 	} finally {
 		if (originalMarker === undefined) delete process.env.LH_DESKTOP_SERVER; else process.env.LH_DESKTOP_SERVER = originalMarker;
 		if (originalSecret === undefined) delete process.env.LH_DESKTOP_API_SECRET; else process.env.LH_DESKTOP_API_SECRET = originalSecret;
@@ -91,4 +94,26 @@ test("renderer controls have no lease or general token bridge, and require the t
 	mainFrame.url = "https://thirdparty.invalid/";
 	assert(!trustedSender({ sender: contents, senderFrame: mainFrame }, origin, BrowserWindow));
 	assert.equal(browserServiceSpawnEnv({ LH_DESKTOP_API_SECRET: secret, LH_DESKTOP_SERVER: "1" }).LH_DESKTOP_API_SECRET, undefined);
+});
+
+test("web/dev mode: the proxy enforces the session gate on pages and API", () => {
+	const saved = { marker: process.env.LH_DESKTOP_SERVER, secret: process.env.LH_DESKTOP_API_SECRET, token: process.env.LH_WEB_TOKEN };
+	try {
+		delete process.env.LH_DESKTOP_SERVER;
+		delete process.env.LH_DESKTOP_API_SECRET;
+		process.env.LH_WEB_TOKEN = secret;
+		const local = "http://127.0.0.1:3000";
+		assert.equal(proxy(new NextRequest(local + "/api/keys", { headers: { host: "127.0.0.1:3000" } })).status, 401);
+		assert.equal(proxy(new NextRequest(local + "/", { headers: { host: "127.0.0.1:3000" } })).status, 401);
+		const exchange = proxy(new NextRequest(`${local}/?lh_token=${secret}`, { headers: { host: "127.0.0.1:3000" } }));
+		assert.equal(exchange.status, 303);
+		assert.match(exchange.headers.get("set-cookie") ?? "", /lh_session=.*HttpOnly.*SameSite=Strict/);
+		const ok = proxy(new NextRequest(local + "/api/keys", { headers: { host: "127.0.0.1:3000", cookie: `lh_session=${secret}` } }));
+		assert.equal(ok.headers.get("x-middleware-next"), "1");
+		assert.equal(proxy(new NextRequest(local + "/api/keys", { headers: { host: "rebind.invalid:3000", cookie: `lh_session=${secret}` } })).status, 403);
+	} finally {
+		for (const [key, value] of [["LH_DESKTOP_SERVER", saved.marker], ["LH_DESKTOP_API_SECRET", saved.secret], ["LH_WEB_TOKEN", saved.token]] as const) {
+			if (value === undefined) delete process.env[key]; else process.env[key] = value;
+		}
+	}
 });

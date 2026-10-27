@@ -1,5 +1,4 @@
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import * as path from "node:path";
 
 /**
@@ -9,10 +8,10 @@ import * as path from "node:path";
  * the learner references files in messages; the agent finds them).
  *
  * Safety posture (user-locked): READ-ONLY by construction — no shell-out,
- * no user-controlled process args, no mutation APIs anywhere here. The one
- * deliberate scope widening vs pi: relative paths and default roots resolve
- * against the LEARNER'S HOME, not a project cwd — the harness has no
- * meaningful working directory, and "find my notes" should just work.
+ * no user-controlled process args, no mutation APIs anywhere here. Paths
+ * resolve inside the learner-granted folders only (fs-scope.ts — the
+ * security hardening of 2026-10-26 replaced the old home-anchored,
+ * unrestricted resolution).
  *
  * Ported behaviors (mirroring pi's dist/core/tools/{ls,find,grep}.js): the
  * schemas, descriptions, output formats, and truncation notices are copied
@@ -34,14 +33,6 @@ export const WALK_TIMEOUT_MS = 10_000;
  * Explicit paths (ls/read of ~/Library/…) are NOT filtered — only walks.
  */
 const EXCLUDED_DIR_NAMES = new Set(["node_modules", ".git", "Library", ".Trash"]);
-
-/** Resolve a tool path argument: absolute stays, relative/absent → home.
- *  (pi resolves against the project cwd; the harness's "project" is the
- *  learner's life, so the home directory is the anchor.) */
-export function resolveSourcePath(p?: string): string {
-	if (!p) return os.homedir();
-	return path.isAbsolute(p) ? p : path.join(os.homedir(), p);
-}
 
 /** pi's formatSize idiom (50KB prints as "50.0KB"). */
 export function formatSize(bytes: number): string {
@@ -127,15 +118,18 @@ export function matchGlob(relativePath: string, pattern: string): boolean {
 }
 
 /**
- * Depth-first walk under `root`, never entering EXCLUDED_DIR_NAMES.
- * `visit` receives absolute file paths; returning true STOPS the walk
- * (find's result limit). The deadline bounds a home-dir walk to
- * WALK_TIMEOUT_MS — partial results are the graceful degradation.
+ * Depth-first walk under `root`, never entering EXCLUDED_DIR_NAMES nor any
+ * path `exclude` rejects (the scope denylist — fs-scope.ts; directories are
+ * pruned whole, files skipped). `visit` receives absolute file paths;
+ * returning true STOPS the walk (find's result limit). The deadline bounds
+ * a large walk to WALK_TIMEOUT_MS — partial results are the graceful
+ * degradation.
  */
 export async function walkFiles(
 	root: string,
 	visit: (filePath: string) => boolean | Promise<boolean>,
 	signal?: AbortSignal,
+	exclude?: (fullPath: string) => boolean,
 ): Promise<{ timedOut: boolean; aborted: boolean }> {
 	const deadline = Date.now() + WALK_TIMEOUT_MS;
 	let timedOut = false;
@@ -167,6 +161,7 @@ export async function walkFiles(
 				return true;
 			}
 			const full = path.join(dir, entry.name);
+			if (exclude?.(full)) continue;
 			if (entry.isDirectory()) {
 				if (EXCLUDED_DIR_NAMES.has(entry.name)) continue;
 				if (await walkDir(full)) return true;

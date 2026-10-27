@@ -3,6 +3,34 @@ import type { NextConfig } from "next";
 
 const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string; homepage: string };
 
+/**
+ * The app's Content-Security-Policy (security hardening, 2026-10-26) —
+ * Next's documented no-nonce policy (pages stay statically renderable),
+ * tightened for this app: same-origin everything; inline script/style for
+ * Next and KaTeX; images only from the app, data: and blob: — so markdown
+ * an LLM writes cannot beacon data out through remote <img> URLs;
+ * connections to the app plus Deepgram's live-dictation socket; no plugins,
+ * no foreign framing, no <base> hijack. No upgrade-insecure-requests: the
+ * app itself is served over http://127.0.0.1. Generated demos run under
+ * their own stricter policy (src/core/demo-sandbox.ts).
+ */
+const dev = process.env.NODE_ENV === "development";
+const CSP = [
+	"default-src 'self'",
+	`script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'${dev ? " 'unsafe-eval'" : ""}`,
+	"style-src 'self' 'unsafe-inline'",
+	"img-src 'self' data: blob:",
+	"font-src 'self' data:",
+	"media-src 'self' data: blob:",
+	"worker-src 'self' blob:",
+	`connect-src 'self' wss://api.deepgram.com${dev ? " ws:" : ""}`,
+	"frame-src 'self' blob: data:",
+	"object-src 'none'",
+	"base-uri 'none'",
+	"form-action 'self'",
+	"frame-ancestors 'none'",
+].join("; ");
+
 const nextConfig: NextConfig = {
 	// Public build metadata only; no new runtime Electron version API.
 	env: { LH_VERSION: pkg.version, LH_HOMEPAGE: pkg.homepage },
@@ -12,6 +40,19 @@ const nextConfig: NextConfig = {
 	// The manual copies the docs require — public/ and .next/static — are
 	// done by scripts/build-server.mjs.
 	output: "standalone",
+	poweredByHeader: false,
+	async headers() {
+		return [
+			{
+				source: "/(.*)",
+				headers: [
+					{ key: "Content-Security-Policy", value: CSP },
+					{ key: "Referrer-Policy", value: "no-referrer" },
+					{ key: "X-Content-Type-Options", value: "nosniff" },
+				],
+			},
+		];
+	},
 	// SAFETY (empirically verified 2026-09-17): without this, output file
 	// tracing sweeps the repo's real data/ — chat records, graph ledgers —
 	// INTO the standalone bundle. A shipped desktop app would carry the
@@ -48,6 +89,8 @@ const nextConfig: NextConfig = {
 		"*": [
 			"**/data/**/*",
 			"auth.json",
+			"auth.enc",
+			"*-credentials.enc",
 			"chatgpt-credentials.json*",
 			"github-copilot-credentials.json*",
 			"xai-credentials.json*",

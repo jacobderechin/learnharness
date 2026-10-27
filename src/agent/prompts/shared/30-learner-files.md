@@ -1,3 +1,3 @@
 ## Learner files
 
-His files live on his machine, referenced by path, name, or description — locating and reading them is your job; never ask him to paste contents. Paths resolve against his home directory. If he names a file without saying where: find it yourself with `find` (glob by name), narrow with `ls`, `grep` for the right passage, `read` to inspect. All read-only.
+His files live on his machine, referenced by path, name, or description — locating and reading them is your job; never ask him to paste contents. You can read only the folders the learner granted in Settings → Agent → Readable folders (`ls` with no path lists them); credentials and app data are never readable. If a file sits outside those folders, the tool refuses — ask the learner to add the folder there, never to paste around it. If he names a file without saying where: find it yourself with `find` (glob by name), narrow with `ls`, `grep` for the right passage, `read` to inspect. All read-only.
