@@ -17,6 +17,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { SessionRow, timeAgo } from "../components/sidebar.tsx";
 import type { ChatListItem } from "../src/core/index.ts";
 
+/** Noon on a calendar date in the machine's own time zone, as ISO — the
+ *  same date in every zone (timeAgo renders dates in local time). */
+const localNoon = (year: number, month: number, day: number) => new Date(year, month - 1, day, 12).toISOString();
+
 function item(overrides: Partial<ChatListItem>): ChatListItem {
 	return {
 		id: "c1",
@@ -82,7 +86,9 @@ describe("SessionRow", () => {
 	});
 
 	it("the meta line: state replaces the count when the state is the useful fact", () => {
-		const awaiting = render(item({ pendingQuestion: true, updatedAt: "2026-01-02T01:00:00.000Z" }));
+		// LOCAL midday: timeAgo formats dates in the machine's time zone, so a
+		// fixed UTC instant lands on different calendar days across zones.
+		const awaiting = render(item({ pendingQuestion: true, updatedAt: localNoon(2026, 1, 2) }));
 		assert.ok(awaiting.includes("Waiting for input · 2026-01-02"), "awaiting meta keeps the existing date");
 		assert.ok(!awaiting.includes("messages"), "count yields to the state");
 		assert.ok(!awaiting.includes("braille-spinner"), "…and the spinner stays off");
@@ -129,7 +135,7 @@ describe("timeAgo", () => {
 		assert.equal(timeAgo("2026-01-02T11:55:00.000Z", now), "5m ago");
 		assert.equal(timeAgo("2026-01-02T09:00:00.000Z", now), "3h ago");
 		assert.equal(timeAgo("2025-12-31T12:00:00.000Z", now), "2d ago");
-		assert.equal(timeAgo("2025-06-02T12:00:00.000Z", now), "2025-06-02", "beyond a week: ISO — unambiguous, sortable");
+		assert.equal(timeAgo(localNoon(2025, 6, 2), now), "2025-06-02", "beyond a week: ISO — unambiguous, sortable");
 	});
 
 	it("negative drift (clock skew) reads as just now, never a future date", () => {
