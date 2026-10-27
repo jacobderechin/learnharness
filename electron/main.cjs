@@ -69,8 +69,9 @@ function serverEntry() {
 
 // ─── Single instance: two instances would fight over the data dir ─────────
 // ─── Browser-service helper (Wave E stage 3, owner 2026-10-10) ────────
-// The render engines for agent jobs: PDFs and SVGs rasterize natively
-// (pdfjs+Skia, resvg — no browser); DEMOS execute JS and need one. The
+// The render engines for agent jobs: PDFs rasterize natively (pdfjs+Skia —
+// no browser); DEMOS and generated SVG figures run in a sandboxed page
+// here (generated content never touches a native file-resolving renderer). The
 // app's own Chromium serves that via this helper — the server spawns
 //   <this binary> --browser-service
 // and connects over CDP (system Chrome stays the fallback). Handshake:
@@ -107,7 +108,10 @@ if (process.argv.includes("--browser-service")) {
 			lockDownBrowserService();
 			// A hidden window keeps the app lifecycle ordinary on every
 			// platform (no window-all-closed handler is installed here).
-			const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
+			// OFFSCREEN rendering: a merely hidden window never paints, so CDP
+			// screenshots (the sandboxed SVG rasterizer, headless.ts) hung;
+			// offscreen paints to an in-memory bitmap — still nothing shown.
+			const win = new BrowserWindow({ show: false, webPreferences: { offscreen: true, sandbox: true, contextIsolation: true, nodeIntegration: false } });
 			await win.loadURL("about:blank");
 			// Window load is not a DevTools HTTP readiness barrier. Confirm the
 			// endpoint before both production and smoke clients see the handshake.
@@ -272,6 +276,7 @@ function startServer(port) {
 					...process.env,
 					ELECTRON_RUN_AS_NODE: "1",
 					NODE_ENV: "production",
+					NEXT_TELEMETRY_DISABLED: "1", // no Next.js usage telemetry from the packaged app
 					PORT: String(port),
 					HOSTNAME: "127.0.0.1", // the server defaults to 0.0.0.0 — never
 					LH_DATA_DIR: DATA_DIR(),

@@ -203,7 +203,7 @@ publish:
   # --publish flag, so builds never upload; publishing happens at release
   # time (GH_TOKEN + --publish).
   - provider: github
-    owner: amosblomqvist
+    owner: jacobderechin
     repo: learnharness
     # All three CI jobs contribute assets; only the owner publishes it.
     releaseType: draft

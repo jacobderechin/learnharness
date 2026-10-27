@@ -6,7 +6,7 @@
 		"name": "Amos Blomqvist",
 		"email": "255718537+amosblomqvist@users.noreply.github.com"
 	},
-	"homepage": "https://github.com/amosblomqvist/learnharness",
+	"homepage": "https://github.com/jacobderechin/learnharness",
 	"desktopName": "learnharness.desktop",
 	"description": "An agent harness for learning: adaptive teaching, practice, and a persistent knowledge graph.",
 	"type": "module",
@@ -17,26 +17,26 @@
 	},
 	"scripts": {
 		"dev": "node scripts/web-launch.mjs dev",
-		"build": "next build",
+		"build": "node scripts/web-launch.mjs build",
 		"start": "node scripts/web-launch.mjs start",
 		"test": "NODE_ENV=test tsx --test tests/*.test.ts tests/*.test.tsx",
 		"lint": "eslint .",
 		"typecheck": "tsc --noEmit",
 		"desktop:dev": "node scripts/web-launch.mjs dev --electron",
 		"dev:fresh": "bash scripts/dev-fresh.sh",
-		"desktop:dist": "rm -rf dist .next/standalone && next build && node scripts/smoke-provider-runtime.mjs && node scripts/build-server.mjs && node scripts/smoke-server.mjs && DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer} APPLE_KEYCHAIN_PROFILE=LH_NOTARY APPLE_TEAM_ID=JS6XN22HY6 electron-builder --mac --arm64"
+		"desktop:dist": "rm -rf dist .next/standalone && npm run build && node scripts/smoke-provider-runtime.mjs && node scripts/build-server.mjs && node scripts/smoke-server.mjs && DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer} APPLE_KEYCHAIN_PROFILE=LH_NOTARY APPLE_TEAM_ID=JS6XN22HY6 electron-builder --mac --arm64"
 	},
 	"dependencies": {
 		"@earendil-works/pi-agent-core": "1.4.0",
 		"@earendil-works/pi-ai": "1.4.0",
 		"@mozilla/readability": "^0.6.0",
 		"@radix-ui/react-use-controllable-state": "^1.2.6",
-		"@resvg/resvg-js": "^2.6.2",
 		"@rive-app/react-webgl2": "^4.32.1",
 		"@streamdown/cjk": "^1.0.3",
 		"@streamdown/code": "^1.1.1",
 		"@streamdown/math": "^1.0.2",
 		"@streamdown/mermaid": "^1.0.2",
+		"@xmldom/xmldom": "^0.9.12",
 		"@xyflow/react": "^12.11.3",
 		"class-variance-authority": "^0.7.1",
 		"clsx": "^2.1.1",
@@ -80,6 +80,7 @@
 	},
 	"devDependencies": {
 		"@next/eslint-plugin-next": "^16.4.3",
+		"@resvg/resvg-js": "^2.6.2",
 		"@tailwindcss/postcss": "^4.3.3",
 		"@types/node": "^26.6.5",
 		"@types/react": "^19.2.18",

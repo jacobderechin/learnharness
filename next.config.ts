@@ -121,9 +121,6 @@ const nextConfig: NextConfig = {
 			// npm installs only the current platform's binary, so this glob
 			// resolves to exactly one Skia binary per build.
 			"node_modules/@napi-rs/canvas-*/**/*",
-			// Wave E stage 2: resvg rasterizes visual-maker SVGs natively; same
-			// per-platform-binary story as the canvas above (one per build).
-			"node_modules/@resvg/resvg-js-*/**/*",
 			"node_modules/@earendil-works/pi-ai/dist/providers/data/**/*",
 			// Public native OAuth factories load these flows through variable imports.
 			// Electron main uses the same standalone SDK; the offline runtime gate
@@ -149,7 +146,6 @@ const nextConfig: NextConfig = {
 		"@earendil-works/pi-agent-core",
 		"pdfjs-dist", // sources v0: bundling breaks its node fake-worker path
 		"@napi-rs/canvas", // native binding — bundling breaks the .node require
-		"@resvg/resvg-js", // native binding — same
 	],
 };
 

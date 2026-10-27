@@ -4,11 +4,13 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEMO_CSP, DEMO_SANDBOX_URL } from "../../core/demo-sandbox.ts";
 import { assertPdfSize, standardFontsDir } from "./pdf-ops";
+import { sanitizeSvg } from "./svg-sanitize.ts";
 
 /**
- * Verification engines for sub-agents: demos use the app's own Electron
- * browser-service via puppeteer-core, with system Chrome as fallback.
- * SVGs use resvg (browser fallback); PDFs use pdfjs + Skia (no browser).
+ * Verification engines for sub-agents: demos AND generated SVGs use the
+ * app's own Electron browser-service via puppeteer-core (sandboxed page),
+ * with sandboxed system Chrome as fallback. PDFs use pdfjs + Skia (no
+ * browser).
  * No extra Chromium is shipped or downloaded.
  *
  * GENERATED CONTENT IS SANDBOXED (security hardening, 2026-10-26): pages
@@ -127,7 +129,7 @@ const NO_CHROME_MESSAGE =
 // port and prints "BROWSER_SERVICE_CDP <port>"). FALLBACK: system Chrome.
 // A Node IPC channel owns its lifetime: parent death/disconnect quits the
 // helper on every OS (Windows Electron stdin is synthetic EOF). No orphans.
-// PDFs and SVGs never come here (native now).
+// PDFs never come here (native pdfjs + Skia); generated SVGs do (sandboxed).
 
 /** Handshake line parser (pure; exported for tests). */
 export function parseBrowserServiceLine(line: string): number | null {
@@ -336,7 +338,7 @@ async function withBrowserPage<T>(fn: (page: import("puppeteer-core").Page) => P
 export async function loadSandboxed(
 	page: import("puppeteer-core").Page,
 	html: string,
-	opts: { timeout?: number } = {},
+	opts: { timeout?: number; contentType?: string } = {},
 ): Promise<void> {
 	await page.setRequestInterception(true);
 	page.on("request", (req) => {
@@ -345,7 +347,7 @@ export async function loadSandboxed(
 		if (url === DEMO_SANDBOX_URL && req.isNavigationRequest() && req.frame() === page.mainFrame()) {
 			void req.respond({
 				status: 200,
-				contentType: "text/html; charset=utf-8",
+				contentType: opts.contentType ?? "text/html; charset=utf-8",
 				headers: { "content-security-policy": DEMO_CSP },
 				body: html,
 			});
@@ -481,54 +483,30 @@ function crc32(buf: Buffer): number {
 }
 
 async function renderSvg(svg: string, opts: RenderSvgOptions = {}): Promise<Buffer> {
-	// NATIVE FIRST (Wave E stage 2, owner 2026-10-10): resvg rasterizes
-	// static SVG in-process — visual-maker SVGs never execute script, so a
-	// browser adds nothing but a process. White background mirrors the old
-	// Chrome page (html,body{background:#fff}); fitTo width mirrors
-	// svgViewport semantics (attrs win, viewBox-only gets the 900 default,
-	// opts override). The browser path below stays as the fallback for
-	// exotic-SVG features resvg cannot parse — failures there used to be
-	// the ONLY path, so nothing regresses.
-	const { width } = svgViewport(svg, opts);
-	// Generated SVGs reference nothing outside themselves (security
-	// hardening, 2026-10-26): resvg would resolve <image href="/abs/path">
-	// from local disk, so every non-data: image reference is dropped first.
-	const sealed = stripExternalSvgRefs(svg);
-	try {
-		const { Resvg } = await import("@resvg/resvg-js");
-		const resvg = new Resvg(sealed, {
-			fitTo: { mode: "width", value: width },
-			font: { loadSystemFonts: true },
-			background: "#ffffff",
-		});
-		return providerSafePng(resvg.render().asPng());
-	} catch {
-		/* fall through to the browser path */
-	}
-	const page = `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;background:#fff}svg{display:block}</style></head><body>${sealed}</body></html>`;
+	// SANDBOXED BROWSER ONLY (security review, 2026-10-27): the native
+	// rasterizer (resvg) resolved local image paths itself — a generated
+	// <image href="/abs/path"> (under ANY namespace prefix) pulled files
+	// outside the learner's grants into the PNG the vision model sees, with
+	// no hook to stop it. Generated SVGs now render only in the same
+	// sandboxed page as demos (DEMO_SANDBOX_URL: no file://, no network),
+	// after the namespace-aware sanitizer (svg-sanitize.ts) as a second
+	// layer. No browser = an honest error, never an unsandboxed fallback.
+	// Served AS an SVG document (not embedded in HTML): the browser parses
+	// exactly the XML the sanitizer checked — no HTML-parser differential.
+	const sealed = sanitizeSvg(svg);
 
 	return withBrowserPage(async (browserPage) => {
 		const { width, height } = svgViewport(svg, opts);
 		await browserPage.setViewport({ width, height });
-		await loadSandboxed(browserPage, page);
-		const shot = (await browserPage.screenshot({ fullPage: true, type: "png" })) as Buffer;
+		await loadSandboxed(browserPage, sealed, { contentType: "image/svg+xml; charset=utf-8" });
+		// Viewport shot (sized to the figure above): fullPage measurement
+		// never settles on a bare SVG document.
+		const shot = (await browserPage.screenshot({ type: "png" })) as Buffer;
 		// Chrome's raw split-IDAT PNG is canonicalized before it reaches a
 		// provider (see providerSafePng) — the visual-maker feeds this exact
 		// buffer back to the vision model as its only way to "look".
 		return providerSafePng(Buffer.from(shot));
 	});
-}
-
-/** Drop every href / xlink:href that is not a data: URI or a same-document
- *  fragment (#id) — pure; exported for tests. */
-export function stripExternalSvgRefs(svg: string): string {
-	return svg.replace(
-		/\s(xlink:href|href)\s*=\s*("([^"]*)"|'([^']*)')/gi,
-		(match, _attr: string, _quoted: string, dq: string | undefined, sq: string | undefined) => {
-			const value = (dq ?? sq ?? "").trim();
-			return /^(data:|#)/i.test(value) ? match : "";
-		},
-	);
 }
 
 // ─── PDF page rasterization (pdfjs paints, Skia hosts) ─────────────────

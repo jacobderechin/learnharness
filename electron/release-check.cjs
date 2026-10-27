@@ -8,8 +8,8 @@
  * the app; the person installs the new version themselves.
  */
 
-const RELEASES_API = "https://api.github.com/repos/amosblomqvist/learnharness/releases/latest";
-const RELEASE_PAGE_PREFIX = "https://github.com/amosblomqvist/learnharness/releases/";
+const RELEASES_API = "https://api.github.com/repos/jacobderechin/learnharness/releases/latest";
+const RELEASE_PAGE_PREFIX = "https://github.com/jacobderechin/learnharness/releases/";
 
 /** Numeric x.y.z compare; a prerelease ranks below its release. */
 function compareVersions(a, b) {

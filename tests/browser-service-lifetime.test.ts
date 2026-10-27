@@ -111,7 +111,7 @@ describe("browser-service IPC-owned lifetime", () => {
 		await turn();
 		assert.match(helper.state.userData ?? "", /lh-browser-service-/, "userData is a throwaway temp profile");
 		// vm-realm objects: compare by value, not prototype.
-		assert.equal(JSON.stringify(helper.state.windowPrefs[0]), JSON.stringify({ sandbox: true, contextIsolation: true, nodeIntegration: false }));
+		assert.equal(JSON.stringify(helper.state.windowPrefs[0]), JSON.stringify({ offscreen: true, sandbox: true, contextIsolation: true, nodeIntegration: false }));
 		let granted: boolean | undefined;
 		helper.state.permission!({}, "media", (ok) => { granted = ok; });
 		assert.equal(granted, false);

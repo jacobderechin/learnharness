@@ -68,7 +68,7 @@ for (const secret of ["auth.json", "auth.enc", ...subscriptionSecrets, ".env", "
 // Remove ONLY these standalone-root paths AFTER tracing — excluding a
 // generic dist/** earlier broke pi-ai / pi-agent-core's runtime dist/.
 // Never touch ROOT/dist or ROOT/node_modules/electron (the running app
-// and the build runtime); native canvas/resvg packages stay untouched.
+// and the build runtime); native canvas packages stay untouched.
 for (const extra of ["dist", path.join("node_modules", "electron")]) {
 	const target = path.join(STANDALONE, extra);
 	if (exists(target)) {

@@ -15,7 +15,7 @@ const mainFile = fileURLToPath(new URL("../electron/main.cjs", import.meta.url))
 const mainSource = readFileSync(mainFile, "utf8");
 const mainRequire = createRequire(mainFile);
 const releaseCheck = mainRequire("./release-check.cjs");
-const RELEASE_URL = "https://github.com/amosblomqvist/learnharness/releases/tag/v9.9.9";
+const RELEASE_URL = "https://github.com/jacobderechin/learnharness/releases/tag/v9.9.9";
 /** Let the check's promise chain (then/finally) run to completion. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -301,16 +301,16 @@ describe("release-check.cjs", () => {
 
 	it("only this repository's release pages are openable", () => {
 		assert.equal(releasePageAllowed(RELEASE_URL), true);
-		for (const bad of ["https://github.com/someone-else/learnharness/releases/tag/v1", "https://evil.example/", "file:///tmp/x", "https://github.com/amosblomqvist/learnharness/releases.evil.example/"]) {
+		for (const bad of ["https://github.com/amosblomqvist/learnharness/releases/tag/v1", "https://evil.example/", "file:///tmp/x", "https://github.com/jacobderechin/learnharness/releases.evil.example/"]) {
 			assert.equal(releasePageAllowed(bad), false, bad);
 		}
 	});
 
 	it("reports newer published releases only; foreign html_url falls back to the pinned tag page", async () => {
-		assert.deepEqual(await checkLatestRelease({ current: "0.3.8", fetch: github({ tag_name: "v0.4.0", html_url: "https://github.com/amosblomqvist/learnharness/releases/tag/v0.4.0" }) }),
-			{ status: "available", version: "0.4.0", url: "https://github.com/amosblomqvist/learnharness/releases/tag/v0.4.0" });
+		assert.deepEqual(await checkLatestRelease({ current: "0.3.8", fetch: github({ tag_name: "v0.4.0", html_url: "https://github.com/jacobderechin/learnharness/releases/tag/v0.4.0" }) }),
+			{ status: "available", version: "0.4.0", url: "https://github.com/jacobderechin/learnharness/releases/tag/v0.4.0" });
 		assert.deepEqual(await checkLatestRelease({ current: "0.3.8", fetch: github({ tag_name: "v0.4.0", html_url: "https://evil.example/x" }) }),
-			{ status: "available", version: "0.4.0", url: "https://github.com/amosblomqvist/learnharness/releases/tag/v0.4.0" });
+			{ status: "available", version: "0.4.0", url: "https://github.com/jacobderechin/learnharness/releases/tag/v0.4.0" });
 		assert.deepEqual(await checkLatestRelease({ current: "0.4.0", fetch: github({ tag_name: "v0.4.0" }) }), { status: "up-to-date" });
 		assert.deepEqual(await checkLatestRelease({ current: "0.3.8", fetch: github({ tag_name: "v0.4.0", draft: true }) }), { status: "up-to-date" });
 		assert.deepEqual(await checkLatestRelease({ current: "0.3.8", fetch: github({ tag_name: "v0.4.0", prerelease: true }) }), { status: "up-to-date" });
