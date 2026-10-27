@@ -5,9 +5,11 @@
  * DESKTOP (LH_DESKTOP_SERVER with its private IPC channel): the keys live
  * in Electron main's key vault, sealed with the OS keyring
  * (electron/key-vault.cjs). This process holds them in memory only — the
- * snapshot is loaded once at boot (instrumentation.ts → loadDesktopKeys,
- * before the first request) and refreshed by every write's reply. Nothing
- * is written to disk here and nothing enters process.env.
+ * snapshot is loaded once at boot (instrumentation.ts, before the first
+ * request) and refreshed by every write's reply. Nothing
+ * is written to disk here and nothing enters process.env. (instrumentation.ts
+ * is import-free for tracing reasons, so it leaves the boot snapshot in a
+ * globalThis slot that vault() adopts.)
  *
  * WEB/DEV: the plaintext auth.json at config.AUTH_FILE (gitignored repo
  * root by default) — owner-only by construction: 0700 directory, random
@@ -41,6 +43,8 @@ interface VaultState {
 	counter: number;
 }
 const VAULT_KEY = Symbol.for("lh.keyVault");
+/** Where instrumentation.ts leaves the boot snapshot (import-free hook). */
+const BOOT_SNAPSHOT = Symbol.for("lh.keyVault.boot");
 
 /** The desktop server's private channel to main (same gate as the
  *  subscription/ChatGPT bridges). */
@@ -56,7 +60,8 @@ export function desktopKeyVault(): boolean {
 function vault(): VaultState {
 	const g = globalThis as typeof globalThis & { [VAULT_KEY]?: VaultState };
 	if (!g[VAULT_KEY]) {
-		const state: VaultState = { snapshot: null, pending: new Map(), counter: 0 };
+		const boot = (g as Record<symbol, unknown>)[BOOT_SNAPSHOT] as VaultSnapshot | undefined;
+		const state: VaultState = { snapshot: boot ?? null, pending: new Map(), counter: 0 };
 		g[VAULT_KEY] = state;
 		process.on("message", (raw: unknown) => {
 			const message = raw as { channel?: string; id?: string; ok?: boolean; value?: VaultSnapshot; error?: string };
@@ -96,17 +101,6 @@ function vaultRequest(op: "snapshot" | "set" | "delete", fields: Record<string, 
 			reject(new Error("The desktop key vault connection closed."));
 		});
 	});
-}
-
-/** Boot-time load (instrumentation.ts): resolves once the snapshot is in
- *  memory. A failure leaves the store empty (and unwritable) — the app
- *  still starts; the keys page reports the state. */
-export async function loadDesktopKeys(): Promise<void> {
-	try {
-		await vaultRequest("snapshot");
-	} catch (err) {
-		console.error(`[keys] desktop key vault unavailable: ${err instanceof Error ? err.message : String(err)}`);
-	}
 }
 
 const desktopStore: AuthStore = {

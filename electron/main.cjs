@@ -38,6 +38,7 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
+const os = require("node:os");
 const path = require("node:path");
 
 // Mirrors SIDEBAR_AUTOCLOSE in components/sidebar.tsx — keep in sync (the
@@ -92,13 +93,20 @@ if (process.argv.includes("--browser-service")) {
 			if (!process.channel || !process.connected) throw new Error("browser-service requires connected parent IPC");
 			process.once("disconnect", parentClosed);
 			app.dock?.hide();
+			// A THROWAWAY PROFILE (security hardening, 2026-10-26): generated
+			// code must never share the real app's userData (cookies, storage,
+			// credentials). Removed on exit.
+			const profile = fs.mkdtempSync(path.join(os.tmpdir(), "lh-browser-service-"));
+			app.setPath("userData", profile);
+			process.once("exit", () => fs.rmSync(profile, { recursive: true, force: true }));
 			const port = await freePort();
 			// Must land before app-ready for Chromium to pick it up.
 			app.commandLine.appendSwitch("remote-debugging-port", String(port));
 			await app.whenReady();
+			lockDownBrowserService();
 			// A hidden window keeps the app lifecycle ordinary on every
 			// platform (no window-all-closed handler is installed here).
-			const win = new BrowserWindow({ show: false });
+			const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
 			await win.loadURL("about:blank");
 			// Window load is not a DevTools HTTP readiness barrier. Confirm the
 			// endpoint before both production and smoke clients see the handshake.
@@ -134,6 +142,30 @@ if (process.argv.includes("--browser-service")) {
 		});
 		main();
 	}
+}
+
+/** The browser-service helper runs LLM-generated documents (security
+ *  hardening, 2026-10-26): deny every permission, popup, and navigation,
+ *  and cancel every request except the sandbox document itself
+ *  (DEMO_SANDBOX_URL in src/core/demo-sandbox.ts) and inline data:/blob:
+ *  — defense in depth under the CDP request interception headless.ts
+ *  installs, so the policy holds even if that connection drops. */
+const DEMO_SANDBOX_URL = "https://demo.invalid/";
+function helperAllowedUrl(url) {
+	return url === DEMO_SANDBOX_URL || url === "about:blank" || url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("devtools:");
+}
+function lockDownBrowserService() {
+	const ses = session.defaultSession;
+	ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+	ses.setPermissionCheckHandler(() => false);
+	ses.webRequest.onBeforeRequest({ urls: ["<all_urls>"] }, (details, callback) => callback({ cancel: !helperAllowedUrl(details.url) }));
+	app.on("web-contents-created", (_event, contents) => {
+		contents.setWindowOpenHandler(() => ({ action: "deny" }));
+		contents.on("will-navigate", (event, target) => {
+			if (!helperAllowedUrl(target)) event.preventDefault();
+		});
+		contents.on("will-attach-webview", (event) => event.preventDefault());
+	});
 }
 
 let serverProcess = null;
