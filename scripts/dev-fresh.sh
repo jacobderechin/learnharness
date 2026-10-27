@@ -4,7 +4,7 @@
 # a fresh instance with zero keys and zero data — setup stage 1, every
 # launch. The owner's repeatable first-run BYOK test bed.
 #
-#   bash scripts/dev-fresh.sh            # http://localhost:3005
+#   bash scripts/dev-fresh.sh            # http://127.0.0.1:3005 (token URL printed)
 #   npm run dev:fresh                    # the same, via package.json
 #   scripts/dev-fresh.sh --port 3006    # any port OUTSIDE 3000-3004
 #   scripts/dev-fresh.sh --keep         # don't wipe between runs
@@ -90,7 +90,7 @@ export LH_IGNORE_ENV_KEYS=1
 export PORT
 
 echo "── fresh-user instance ─────────────────────────────────"
-echo "  URL      : http://localhost:$PORT"
+echo "  URL      : printed below by the launcher (http://127.0.0.1:$PORT/?lh_token=…)"
 echo "  data dir : $DATA_DIR ($( [ "$KEEP" = "true" ] && echo 'kept across runs' || echo 'wiped next launch unless --keep' ))"
 echo "  keys     : env keys hidden (LH_IGNORE_ENV_KEYS=1), auth.json empty"
 echo "─────────────────────────────────────────────────────────"

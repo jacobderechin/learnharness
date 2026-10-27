@@ -327,7 +327,7 @@ function killServer() {
  *    default, we do not);
  *  - will-navigate pinned to the app origin; window.open always denied —
  *    external links go to the real browser via shell.openExternal. */
-function createWindow(url) {
+function createWindow(url, entry = url) {
 	const win = new BrowserWindow({
 		width: 1440,
 		height: 900,
@@ -412,7 +412,7 @@ function createWindow(url) {
 		return { action: "deny" };
 	});
 
-	void win.loadURL(url);
+	void win.loadURL(entry);
 	// Zoom truth reaches the renderer for EVERY load (reload, nav): the
 	// renderer's --lh-zoom must never go stale. The fallback catcher below
 	// covers ⌘= / layout variants the menu's ⌘Plus may not claim — menu-
@@ -754,7 +754,10 @@ async function main() {
 	// Next server may be resolved here; never accept an arbitrary external URL.
 	ipcMain.handle("lh:subscriptions:web-browser", async (event, action) => {
 		if (!devUrl || !trustedAppWindows.has(BrowserWindow.fromWebContents(event.sender)) || !trustedSender(event, new URL(url).origin, BrowserWindow)) throw new Error("Untrusted development request.");
-		await openWebSubscriptionBrowser(action, new URL(url).origin, { openExternal: (target) => shell.openExternal(target) });
+		await openWebSubscriptionBrowser(action, new URL(url).origin, {
+			openExternal: (target) => shell.openExternal(target),
+			session: process.env.LH_WEB_TOKEN,
+		});
 	});
 
 	// Readable folders (security hardening, 2026-10-26): the native picker
@@ -800,11 +803,15 @@ async function main() {
 		const target = SIDEBAR_AUTOCLOSE;
 		if (width < target) win.setBounds({ x, y, width: target, height });
 	});
-	reopenWindow = () => { chatgpt?.resume(); subscriptions?.resume(); return createWindow(url); };
+	// Web/dev access token (security hardening, 2026-10-26): the dev server
+	// (scripts/web-launch.mjs) requires a session cookie, which the first
+	// load obtains by presenting the launcher's token once.
+	const entry = devUrl && process.env.LH_WEB_TOKEN ? `${devUrl}/?lh_token=${encodeURIComponent(process.env.LH_WEB_TOKEN)}` : url;
+	reopenWindow = () => { chatgpt?.resume(); subscriptions?.resume(); return createWindow(url, entry); };
 	app.on("activate", () => {
 		if (BrowserWindow.getAllWindows().length === 0) reopenWindow();
 	});
-	createWindow(url);
+	createWindow(url, entry);
 	log(`window open: ${url}`);
 	// Startup + 24h checks stay main-owned and read the current preference.
 	// No renderer subscription is required; late loads retrieve the snapshot.
