@@ -1,13 +1,13 @@
 "use client";
 
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
-import { DownloadIcon } from "lucide-react";
 import { Toggle } from "@/components/settings/controls";
 import { InvertDiscIcon } from "@/components/artifacts/invert-disc";
 import { ChatActionsContext } from "@/components/chat";
 import { downloadFile, slugFilename } from "@/components/artifacts/download";
 import { DispatchCard } from "@/components/artifacts/dispatch-card";
-import { withDemoCsp, type ArtifactPartProps, type DemoResult } from "@/src/core";
+import { DownloadMenu } from "@/components/artifacts/download-menu";
+import { DEMO_CSP, withDemoCsp, type ArtifactPartProps, type DemoResult } from "@/src/core";
 
 /**
  * Demo artifact card (W6): while the part is input-available, a job activity
@@ -54,6 +54,30 @@ export function buildDemoSrcDoc(html: string): string {
 		? html.replace(/<\/body>/i, `${DEMO_BRIDGE_SCRIPT}</body>`)
 		: `${html}${DEMO_BRIDGE_SCRIPT}`;
 	return withDemoCsp(bridged);
+}
+
+
+const escapeAttr = (s: string) =>
+	s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** The SAFE demo download (security review, 2026-10-27): a self-contained
+ *  page that embeds the demo exactly as the app does — an
+ *  <iframe sandbox="allow-scripts"> (opaque origin: no file://, no
+ *  top-navigation, no popups, no storage) whose document carries the
+ *  no-network CSP. Opened from disk it stays interactive and keeps both
+ *  protections. Pure — exported for tests. */
+export function buildDemoViewer(title: string, html: string): string {
+	const name = escapeAttr(title || "Demo");
+	return (
+		`<!doctype html><html><head><meta charset="utf-8">` +
+		// The outer page runs nothing itself; it carries the demo policy
+		// because a srcdoc frame INHERITS its parent's CSP (on top of its
+		// own) — a stricter outer policy would also block the demo's script.
+		`<meta http-equiv="Content-Security-Policy" content="${DEMO_CSP}">` +
+		`<title>${name}</title>` +
+		`<style>html,body{margin:0;height:100%;background:#fff}iframe{display:block;border:0;width:100%;height:100%}</style>` +
+		`</head><body><iframe sandbox="allow-scripts" title="${name}" srcdoc="${escapeAttr(buildDemoSrcDoc(html))}"></iframe></body></html>`
+	);
 }
 
 export interface DemoBridgeState {
@@ -193,16 +217,22 @@ function DemoFrame({
 						title="Invert colors"
 						discIcon={<InvertDiscIcon className="size-3" />}
 					/>
-					<button
-						type="button"
-						aria-label="Download demo as HTML"
-						title="Download as HTML"
-						onClick={() => downloadFile(`${slugFilename(title)}.html`, html, "text/html")}
-						data-testid="demo-download"
-						className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-					>
-						<DownloadIcon className="size-3.5" />
-					</button>
+					<DownloadMenu
+						ariaLabel="Download demo"
+						testid="demo-download"
+						safe={{
+							label: "Sandboxed demo (.html)",
+							hint: "Runs in a sandbox with no network or file access",
+							testid: "demo-download-safe",
+							run: () => downloadFile(`${slugFilename(title)}.html`, buildDemoViewer(title, html), "text/html"),
+						}}
+						source={{
+							label: "Source — untrusted code (.html)",
+							hint: "Raw generated code; runs without the app's protections",
+							testid: "demo-download-source",
+							run: () => downloadFile(`${slugFilename(title)}.source.html`, html, "text/plain"),
+						}}
+					/>
 				</div>
 			</div>
 			{state.error && (

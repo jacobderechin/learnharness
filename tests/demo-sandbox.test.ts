@@ -1,15 +1,14 @@
 /**
  * Generated-content sandbox (security hardening, 2026-10-26): the shared
  * no-network policy (src/core/demo-sandbox.ts), the iframe srcDoc it rides
- * in, the SVG reference stripping before resvg, the verifier prompt, and
+ * in, the verifier prompt, and
  * parity of every copy of the policy (main.cjs helper, the smoke probe).
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { DEMO_CSP, DEMO_SANDBOX_URL, withDemoCsp } from "../src/core/demo-sandbox.ts";
-import { buildDemoSrcDoc } from "../components/artifacts/demo-card.tsx";
-import { stripExternalSvgRefs } from "../src/agent/subagents/headless.ts";
+import { buildDemoSrcDoc, buildDemoViewer } from "../components/artifacts/demo-card.tsx";
 
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 
@@ -37,13 +36,18 @@ describe("withDemoCsp / buildDemoSrcDoc", () => {
 	});
 });
 
-describe("stripExternalSvgRefs (before resvg / the browser fallback)", () => {
-	it("drops file and remote references, keeps data: and #fragments", () => {
-		const svg = `<svg><image href="/home/u/.ssh/id_rsa.png"/><image xlink:href='https://x.test/a.png'/><image href="data:image/png;base64,AA"/><use href="#dot"/></svg>`;
-		const out = stripExternalSvgRefs(svg);
-		assert.doesNotMatch(out, /\.ssh|x\.test/);
-		assert.match(out, /href="data:image\/png;base64,AA"/);
-		assert.match(out, /href="#dot"/);
+describe("buildDemoViewer (the safe demo download)", () => {
+	it("frames the demo in an allow-scripts-only sandbox under the demo CSP, with everything escaped", () => {
+		const out = buildDemoViewer('A "quoted" <title>', '<!doctype html><p onclick="x()">&amp; "q"</p>');
+		assert.match(out, /^<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'/);
+		assert.match(out, /<iframe sandbox="allow-scripts" title="A &quot;quoted&quot; &lt;title&gt;" srcdoc="/);
+		assert.doesNotMatch(out, /allow-same-origin|allow-top-navigation|allow-popups/);
+		assert.match(out, /<title>A &quot;quoted&quot; &lt;title&gt;<\/title>/);
+		const srcdoc = /srcdoc="([^"]*)"/.exec(out)![1]!;
+		assert.ok(!srcdoc.includes('"') && !srcdoc.includes("<"), "the attribute cannot be broken out of");
+		const decoded = srcdoc.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+		assert.equal(decoded, buildDemoSrcDoc('<!doctype html><p onclick="x()">&amp; "q"</p>'), "the framed document is exactly the in-app one");
+		assert.equal((out.match(/<script/gi) ?? []).length, 0, "the outer page runs nothing itself");
 	});
 });
 

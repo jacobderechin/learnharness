@@ -19,14 +19,39 @@ export function slugFilename(title: string): string {
 	return slug || "demo";
 }
 
-/** Save text as a downloaded file. The blob URL is revoked right after the
- *  click — Chromium keeps the download alive past the revoke. */
-export function downloadFile(name: string, text: string, mime: string): void {
-	const blob = new Blob([text], { type: mime });
+/** Save text (or an already-built blob) as a downloaded file. The blob URL
+ *  is revoked right after the click — Chromium keeps the download alive
+ *  past the revoke. */
+export function downloadFile(name: string, content: string | Blob, mime: string): void {
+	const blob = typeof content === "string" ? new Blob([content], { type: mime }) : content;
 	const url = URL.createObjectURL(blob);
 	const a = document.createElement("a");
 	a.href = url;
 	a.download = name;
 	a.click();
 	URL.revokeObjectURL(url);
+}
+
+/** Rasterize a figure to PNG IN THE BROWSER (security review, 2026-10-27:
+ *  the safe default figure export). The SVG is decoded as an <img> — the
+ *  browser's secure image mode: no script, no external fetches — then
+ *  drawn to a canvas at `scale`× its intrinsic size (900px wide when it
+ *  declares none). Only on click. */
+export async function svgToPng(svgSource: string, scale = 2): Promise<Blob> {
+	const img = new Image();
+	img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgSource)}`;
+	await img.decode();
+	const width = img.naturalWidth || 900;
+	const height = img.naturalHeight || Math.round(width * 0.75);
+	const canvas = document.createElement("canvas");
+	canvas.width = Math.round(width * scale);
+	canvas.height = Math.round(height * scale);
+	const ctx = canvas.getContext("2d");
+	if (!ctx) throw new Error("canvas unavailable");
+	ctx.fillStyle = "#ffffff";
+	ctx.fillRect(0, 0, canvas.width, canvas.height);
+	ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+	return new Promise((resolve, reject) =>
+		canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("PNG encoding failed"))), "image/png"),
+	);
 }
