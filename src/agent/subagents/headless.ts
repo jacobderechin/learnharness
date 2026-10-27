@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEMO_CSP, DEMO_SANDBOX_URL } from "../../core/demo-sandbox.ts";
-import { standardFontsDir } from "./pdf-ops";
+import { assertPdfSize, standardFontsDir } from "./pdf-ops";
 
 /**
  * Verification engines for sub-agents: demos use the app's own Electron
@@ -556,6 +556,7 @@ async function renderPdfPages(
 	// needed a browser; now renders don't either.
 	const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
 	const { createCanvas } = await import("@napi-rs/canvas");
+	await assertPdfSize(path.resolve(pdfPath));
 	const data = new Uint8Array(fs.readFileSync(path.resolve(pdfPath)));
 	// Standard-font data as a directory path (live-smoke finding 2026-09-19:
 	// without it pdfjs renders non-embedded standard fonts via fallback);

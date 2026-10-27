@@ -30,6 +30,11 @@ import { resolveScopedPath, type FsScope } from "./fs-scope.ts";
 
 const MAX_LINES = 2000;
 const MAX_BYTES = 50 * 1024;
+/** Files larger than this are refused BEFORE they are loaded (security
+ *  hardening, 2026-10-26): the output caps above only trimmed after a full
+ *  read, so one huge file could exhaust the server's memory. */
+const MAX_TEXT_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGE_FILE_BYTES = 5 * 1024 * 1024;
 
 /** Extension map for v0 (pi sniffs magic bytes; extensions suffice here —
  *  learner files are pasted paths, not adversarial uploads). */
@@ -105,7 +110,13 @@ export function readToolFor(scope: FsScope): AgentTool<typeof readInput> {
 			const absolute = await resolveScopedPath(scope, rawPath);
 			const ext = path.extname(absolute).toLowerCase();
 			const mime = IMAGE_MIME[ext];
-			const buffer = await fs.readFile(absolute); // ENOENT/EACCES → error result the model sees
+			const stat = await fs.stat(absolute); // ENOENT/EACCES → error result the model sees
+			if (!stat.isFile()) throw new Error(`Not a regular file: ${rawPath}`);
+			const cap = mime ? MAX_IMAGE_FILE_BYTES : MAX_TEXT_FILE_BYTES;
+			if (stat.size > cap) {
+				throw new Error(`File too large to read (${formatSize(stat.size)}; the limit is ${formatSize(cap)}). Use grep to find the relevant part.`);
+			}
+			const buffer = await fs.readFile(absolute);
 			if (mime) {
 				// NOTE v0: no resize — raw bytes as base64. Learner files are study
 				// material (screenshots, figures), not adversarial payloads; a resize
