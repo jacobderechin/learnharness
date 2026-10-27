@@ -15,16 +15,16 @@ Not a chat app with a graph bolted on: sessions are probe→teach lessons, the p
 ```bash
 npm install          # once
 
-npm run dev          # http://localhost:3000
+npm run dev          # 127.0.0.1 only — open the printed http://127.0.0.1:3000/?lh_token=… URL once
 npm run build        # production build (standalone output)
-npm start            # serve the production build
+npm start            # serve the production build (same launcher, same token URL)
 
 npm test             # the full suite (node:test via tsx; deterministic, no LLM, no network)
 npm run lint         # eslint — includes the import law (architecture §2)
 npm run typecheck    # tsc --noEmit
 node scripts/smoke-web-subscriptions.mjs # after build: offline Next start/dev + reload gate
 
-npm run desktop:dev    # next dev + Electron shell pointed at it
+npm run desktop:dev    # next dev + Electron shell pointed at it (the shell signs itself in)
 npm run desktop:dist   # local signed/notarized macOS arm64 build (LH_NOTARY keychain)
 
 # one-shot data scripts (run from the master tree only — data never crosses trees)
@@ -46,17 +46,25 @@ Secrets and machine-specific paths only. Model choice and thinking budgets are t
 | `DEEPGRAM_API_KEY` | optional — dictation (STT token minting; audio streams browser→Deepgram, never through the server) |
 | `CHROME_PATH` | optional system Chrome fallback for demo verification; the app's own browser helper is primary (nothing is downloaded) |
 
-The packaged desktop app takes keys from `userData/auth.json` (BYOK, mode 0600, read/written directly by the server via `LH_AUTH_FILE`). PDFs render natively with pdfjs/Skia; SVGs use resvg.
+The packaged desktop app keeps keys in `userData/auth.enc`, sealed with the OS keyring by Electron main; the server reads and writes them only over its private IPC channel, and they never enter the environment. A legacy plaintext `auth.json` is migrated (and deleted) at startup when a keyring is available; on Linux without GNOME Keyring/KWallet, saving keys is refused (environment variables still work). PDFs render natively with pdfjs/Skia; SVGs use resvg.
+
+### Web/dev access
+
+`npm run dev`, `npm start` and `npm run desktop:dev` go through `scripts/web-launch.mjs`: Next binds **127.0.0.1 only**, and the launcher prints a one-time sign-in URL (`/?lh_token=…`). Opening it sets an HttpOnly session cookie; every page and API request needs that cookie, a localhost Host header, and (for API writes) a same-origin request. Set `LH_WEB_TOKEN` (≥ 32 chars) to keep the same token across restarts. Starting `next` directly, without the launcher, serves nothing (fail closed).
+
+### Agent file access
+
+The agents can read local files only inside the folders granted in **Settings → Agent → Readable folders** (none by default). Credentials, the app's data and key store, keychains and browser profiles stay unreadable even inside a granted folder.
 
 ### Subscription connections in web/dev
 
-Ordinary `npm run dev` and `npm start` support the existing **ChatGPT, GitHub Copilot and Grok** connections in Settings → Providers. No separate launcher or change to Next's listening/LAN behavior is required. `npm run desktop:dev` uses these same dev-server connections; the packaged desktop app keeps its separate main-process credentials and private IPC transport.
+Ordinary `npm run dev` and `npm start` support the existing **ChatGPT, GitHub Copilot and Grok** connections in Settings → Providers. They run behind the same web/dev access gate as everything else (above). `npm run desktop:dev` uses these same dev-server connections; the packaged desktop app keeps its separate main-process credentials and private IPC transport.
 
 Web/dev saves `chatgpt-credentials.json`, `github-copilot-credentials.json` and `xai-credentials.json` **beside the configured API-key `auth.json`**: the project directory by default, or the directory containing `LH_AUTH_FILE`. These are owner-only plaintext files, not files under `data/`, desktop Application Support, or a global Pi profile. Git and standalone-build exclusions cover both the files and atomic-write temporary files. Run only one server process per credential directory: refresh serialization is process-local, not a cross-process lock.
 
 Sign-in opens a new tab in the browser that initiated it; permit that tab if your browser blocks popups. **ChatGPT sign-in must be completed in a browser on the server's machine**, because its callback listener remains `127.0.0.1` on that machine. Copilot/Grok use device codes. In the Electron dev shell, provider pages open in the system browser instead. Once connected, credentials and refresh remain server-owned; other browsers using that server share its connections and background-use consent, just as they share its API keys. Disconnect, storage-failure handling, and provider-specific background consent retain the existing behavior; subscription routes never fall back to API-key billing.
 
-This remains a **trusted developer/shared-server mode**, not multi-user hosting. Subscription controls require same-origin JSON/custom-header requests; browser-opening actions are short-lived, origin-bound and one-use. These checks prevent ordinary cross-origin browser controls, **not user authentication or DNS-rebinding protection**. Do not expose an unprotected dev/server instance to untrusted users or the public Internet; a public deployment needs an independent access/host gate. Remote ChatGPT callback routing, per-user accounts and credential import are not implemented.
+This remains a **single-user local mode**, not multi-user hosting. Subscription controls additionally require same-origin JSON/custom-header requests; browser-opening actions are short-lived, origin-bound and one-use. The server answers only on 127.0.0.1 to holders of the launcher's session; do not proxy it to other machines. Remote ChatGPT callback routing, per-user accounts and credential import are not implemented.
 
 ## Architecture
 

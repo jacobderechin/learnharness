@@ -2,13 +2,17 @@
 
 ## Platforms
 
-| Platform | Build runner | Packages | In-app update |
-|---|---|---|---|
-| macOS, Apple Silicon | `macos-26` (arm64) | signed/notarized DMG + ZIP | ZIP via Squirrel.Mac |
-| Windows, x64 | `windows-2025` | unsigned per-user NSIS installer | NSIS |
-| Linux, x64 | `ubuntu-24.04` | AppImage + `.deb` | AppImage replacement; `.deb` through dpkg/apt with elevation if needed |
+| Platform | Build runner | Packages |
+|---|---|---|
+| macOS, Apple Silicon | `macos-26` (arm64) | signed/notarized DMG + ZIP |
+| Windows, x64 | `windows-2025` | unsigned per-user NSIS installer |
+| Linux, x64 | `ubuntu-24.04` | AppImage + `.deb` |
 
-Windows signing is deliberately disabled for this first release. SmartScreen may warn about an unknown publisher on initial installation. AppImage is the primary Linux download because it is self-contained and updates without administrator permission. The installed `electron-updater` 6.8.9 also supports `.deb` updates; an update may request an administrator password. Both use the same download/restart banner.
+**Updates are notify-only** (security hardening, 2026-10-26; owner: no automatic updating). The app checks GitHub Releases at startup and every 24 h (Settings → General, "Automatic update checks"; manual checks always work) and, when a newer published release exists, shows a banner whose Download button opens that release page in the browser. Nothing downloads, stages or installs itself; people install the new version manually. electron-builder still uploads its `latest*.yml` metadata with each release (the verify job below checks it), but the app no longer reads it.
+
+Windows signing is deliberately disabled for this first release — **deferred, a known residual risk**: SmartScreen may warn about an unknown publisher, and Windows users cannot verify the installer's publisher. Enabling it needs a code-signing certificate (or Azure Trusted Signing) and CI secrets. AppImage is the primary Linux download because it is self-contained.
+
+**Hardening that packaging applies:** `electronFuses` in `electron-builder.yml` (NODE_OPTIONS and `--inspect` ignored, app.asar only with embedded integrity validation, no extra `file://` privileges; RunAsNode stays on because the server is spawned through it — so the unpacked server payload sits outside asar integrity). `scripts/build-server.mjs` refuses to package `auth.json`, `auth.enc`, credential files, `.env*` or `data/`.
 
 The custom app bar stays on all three platforms. macOS keeps its left-side traffic lights; Windows/Linux use Electron's native right-side Window Controls Overlay, with CSS space reserved from the overlay's actual geometry. Windows/Linux hide the native menu until Alt is pressed. macOS keeps its system menu.
 
@@ -25,7 +29,7 @@ Each OS installs its own dependencies and builds its own Next standalone tree:
 5. `node scripts/smoke-server.mjs --electron` — boot the standalone server in Electron's bundled Node, using empty temporary data/auth, then check the home route and GET-only APIs.
 6. `npx electron-builder <platform flags> --publish <policy>`.
 
-The shell/updater live in `app.asar`; the standalone server and native renderer binaries ship unpacked as `extraResources`. **Do not cross-build the server payload.** Next traces the build machine's native binaries, so a macOS-built standalone tree is not a Windows/Linux payload.
+The shell lives in `app.asar`; the standalone server and native renderer binaries ship unpacked as `extraResources`. **Do not cross-build the server payload.** Next traces the build machine's native binaries, so a macOS-built standalone tree is not a Windows/Linux payload.
 
 `npm run desktop:dist` remains the local macOS signing path, using the `LH_NOTARY` keychain profile. For a local Windows/Linux build, run steps 1–5 above, then:
 
@@ -61,7 +65,7 @@ The three jobs upload distinct updater feeds: `latest-mac.yml`, `latest.yml`, `l
 | Asset | Role |
 |---|---|
 | `LearnHarness-<v>-arm64.dmg` + `.blockmap` | macOS installer |
-| `LearnHarness-<v>-arm64-mac.zip` + `.blockmap` | macOS updater payload (Squirrel.Mac installs from the ZIP) |
+| `LearnHarness-<v>-arm64-mac.zip` + `.blockmap` | macOS ZIP (manual download; the app no longer self-updates) |
 | `LearnHarness-<v>-x64-setup.exe` + `.blockmap` | Windows NSIS installer |
 | `LearnHarness-<v>-x86_64.AppImage` | Linux AppImage (no sidecar blockmap) |
 | `LearnHarness-<v>-amd64.deb` | Linux deb (no sidecar blockmap) |
