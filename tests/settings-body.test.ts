@@ -35,6 +35,18 @@ describe("parseGeneralSettingsBody", () => {
 	});
 });
 
+describe("parseAgentSettingsBody — readableFolders shape", () => {
+	it("accepts an array of paths (trimmed) and rejects anything else", () => {
+		const ok = parseAgentSettingsBody({ readableFolders: [" /notes "] });
+		assert.ok(ok.ok && ok.settings.readableFolders?.[0] === "/notes");
+		assert.equal(parseAgentSettingsBody({ readableFolders: "/notes" }).ok, false);
+		assert.equal(parseAgentSettingsBody({ readableFolders: [42] }).ok, false);
+		assert.equal(parseAgentSettingsBody({ readableFolders: [""] }).ok, false);
+		const empty = parseAgentSettingsBody({ readableFolders: [] });
+		assert.ok(empty.ok && empty.settings.readableFolders === undefined, "[] clears the grants");
+	});
+});
+
 describe("parseAgentSettingsBody", () => {
 	it("models: valid roles with model pair and/or thinkingLevel; unknown role is a 400 with the list", () => {
 		const r = parseAgentSettingsBody({

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AssistantMessage, Message, ToolResultMessage, Usage, Tool } from "@earendil-works/pi-ai";
 import { normalizeContext } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { resolveSourcePath } from "../tools/fs-shared.ts";
+import { NO_FS_ACCESS, resolveScopedPath, type FsScope } from "../tools/fs-scope.ts";
 import { piEngineFor, type PiEngine, type ThinkingLevel } from "../models.ts";
 import { providerEventObserver, type ProviderEventObserver } from "../provider-events.ts";
 import type { PdfResult, PdfToolInput } from "../../core/contracts.ts";
@@ -71,6 +71,8 @@ export interface PdfReaderOptions {
 	maxIterations?: number;
 	/** Debug: raw provider-event recording key (LH_PROVIDER_EVENTS=1). */
 	chatId?: string;
+	/** The learner-granted folders (fs-scope.ts). Absent = no access. */
+	fsScope?: FsScope;
 }
 
 export interface PdfReaderInput extends PdfToolInput {}
@@ -167,7 +169,13 @@ export async function runPdfReaderAgent(
 ): Promise<PdfResult> {
 	const headless = opts.headless ?? getHeadless();
 	const maxIterations = opts.maxIterations ?? MAX_ITERATIONS;
-	const pdfPath = resolveSourcePath(input.path);
+	let pdfPath: string;
+	try {
+		pdfPath = await resolveScopedPath(opts.fsScope ?? NO_FS_ACCESS, input.path);
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		return { path: input.path, question: input.question, brief: `PDF failed: ${reason}`, pagesRead: [], pagesConsulted: [] };
+	}
 
 	// Deterministic upfront failure: unreadable / unparseable
 	// for renders — the brief never starts on a broken source.

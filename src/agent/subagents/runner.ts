@@ -30,6 +30,7 @@ import { runDemoBuilder } from "./demo-builder.ts";
 import { runPdfReaderAgent } from "./pdf-reader.ts";
 import { runResearcherAgent } from "./researcher.ts";
 import { runVisualMaker } from "./visual-maker.ts";
+import type { FsScope } from "../tools/fs-scope.ts";
 
 /**
  * The background job runner (contracts.ts "THE ASYNC PROTOCOL" §2–3), created
@@ -92,6 +93,9 @@ export interface JobRunnerDeps {
 	 *  Injected because the agent layer may not read the key store; absent
 	 *  in tests that inject engines directly (test engines never owe a key). */
 	providerKeyMissing?: (provider: string, tier: ModelSlotName) => ProviderKeyMissing | null;
+	/** The learner-granted folders the pdf job may read (fs-scope.ts).
+	 *  Absent = no access (every pdf path is refused). */
+	fsScope?: FsScope;
 }
 
 export interface JobRunner {
@@ -504,6 +508,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 				chatId: loop.chatId,
 				onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
 				onActivity: (line) => jobStore.updateJob(jobId, { activity: line }),
+				fsScope: deps.fsScope,
 			},
 			);
 			if (isPdfFailure(result) && stillRunning(jobId))

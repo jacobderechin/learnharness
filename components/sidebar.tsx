@@ -77,6 +77,9 @@ declare global {
 			checkForUpdates?: () => Promise<void>;
 			installUpdate?: () => void;
 			onOpenSettings?: (cb: (section: string) => void) => () => void;
+			/** Native folder picker for Settings → Agent → Readable folders;
+			 *  null when the learner cancels. */
+			pickFolder?: () => Promise<string | null>;
 		};
 	}
 }

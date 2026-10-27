@@ -33,6 +33,7 @@ import { providerEventNote } from "../agent/provider-events.ts";
 import { effectiveSettings, stores } from "./stores.ts";
 import { searchAvailable, searchProvider } from "./search.ts";
 import { providerKeyPresent } from "./keys.ts";
+import { learnerFsScope } from "./fs-access.ts";
 import {
 	extractionEnabled,
 	graphToolsEnabled,
@@ -104,6 +105,8 @@ const jobRunner = createJobRunner({
 	// null = honestly unavailable; the dispatch-level drop (below) uses the
 	// same signal so keyless servers never see the research tool at all.
 	searchProvider,
+	// The pdf job reads learner PDFs inside the granted folders only.
+	fsScope: learnerFsScope,
 });
 /** The app's ONE extraction pipeline instance — both front doors share it:
  *  quiz-triggered session runs (turn-service) and notes imports
@@ -432,6 +435,7 @@ export async function handleChatInput(
 							searchAvailable,
 						},
 						...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: stores.graphStore } } : {}),
+						fsScope: learnerFsScope,
 					},
 					agentOpts,
 				)
@@ -445,6 +449,7 @@ export async function handleChatInput(
 						// The registry drop's signal (2026-09-20): no live engine
 						// = no research tool in the teacher's registry.
 						searchAvailable,
+						fsScope: learnerFsScope,
 					},
 					agentOpts,
 				)
@@ -463,6 +468,7 @@ export async function handleChatInput(
 						// knowledge graph through tools when the gate opens —
 						// graph master switch AND the agent.graphTools toggle.
 						...(graphToolsEnabled(effective) ? { graphStore: stores.graphStore } : {}),
+						fsScope: learnerFsScope,
 					},
 					agentOpts,
 				);

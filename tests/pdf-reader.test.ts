@@ -13,8 +13,11 @@ import { createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type Faux
 import type { PiEngine } from "../src/agent/models.ts";
 import { runPdfReaderAgent } from "../src/agent/subagents/pdf-reader.ts";
 import type { HeadlessApi } from "../src/agent/subagents/headless.ts";
+import type { FsScope } from "../src/agent/tools/fs-scope.ts";
 
 const FIXTURE = path.join(import.meta.dirname, "fixtures", "sample-3page.pdf");
+/** The fixtures folder as the one granted folder (fs-scope.ts). */
+const FIXTURE_SCOPE: FsScope = { roots: () => [path.dirname(FIXTURE)], denied: () => [] };
 
 function fauxEngine(steps: FauxResponseStep[]): PiEngine {
 	const faux = createFauxCore({ tokenSize: { min: 64, max: 64 } });
@@ -59,8 +62,11 @@ describe("pdf-reader source paths", () => {
 	const originalHome = process.env.HOME;
 	const originalUserProfile = process.env.USERPROFILE;
 
+	/** The learner's granted folder: relative paths resolve against it. */
+	const homeScope: FsScope = { roots: () => [home], denied: () => [] };
+
 	before(() => {
-		home = fs.mkdtempSync(path.join(os.tmpdir(), "lh-pdf-home-"));
+		home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "lh-pdf-home-")));
 		const target = path.join(home, relativePath);
 		fs.mkdirSync(path.dirname(target), { recursive: true });
 		fs.copyFileSync(FIXTURE, target);
@@ -76,7 +82,7 @@ describe("pdf-reader source paths", () => {
 		fs.rmSync(home, { recursive: true, force: true });
 	});
 
-	for (const kind of ["absolute", "home-relative"] as const) {
+	for (const kind of ["absolute", "folder-relative"] as const) {
 		it(`${kind} path reaches text tools and rendering as the same absolute path`, async () => {
 			const absolutePath = path.join(home, relativePath);
 			const inputPath = kind === "absolute" ? absolutePath : relativePath;
@@ -98,7 +104,7 @@ describe("pdf-reader source paths", () => {
 			};
 			const result = await runPdfReaderAgent(
 				{ path: inputPath, question: "Read the document" },
-				{ engine, headless },
+				{ engine, headless, fsScope: homeScope },
 			);
 			assert.equal(result.path, absolutePath);
 			assert.match(result.brief, /^Read the requested document/);
@@ -109,7 +115,7 @@ describe("pdf-reader source paths", () => {
 		});
 	}
 
-	it("a missing home-relative source fails before any model call", async () => {
+	it("a missing folder-relative source fails before any model call", async () => {
 		let modelCalls = 0;
 		const engine = fauxEngine([]);
 		engine.streamFn = () => {
@@ -117,7 +123,7 @@ describe("pdf-reader source paths", () => {
 			throw new Error("the model must not be called");
 		};
 		const missing = path.join("Course notes", "missing.pdf");
-		const result = await runPdfReaderAgent({ path: missing, question: "anything" }, { engine });
+		const result = await runPdfReaderAgent({ path: missing, question: "anything" }, { engine, fsScope: homeScope });
 		assert.equal(result.path, path.join(home, missing));
 		assert.match(result.brief, /^PDF failed:.*ENOENT/);
 		assert.equal(modelCalls, 0);
@@ -138,7 +144,7 @@ describe("pdf-reader loop (faux engine)", () => {
 		]);
 		const result = await runPdfReaderAgent(
 			{ path: FIXTURE, question: "what is the integral of x?" },
-			{ engine },
+			{ engine, fsScope: FIXTURE_SCOPE },
 		);
 		assert.equal(result.path, FIXTURE);
 		assert.match(result.brief, /integral rule/);
@@ -161,7 +167,7 @@ describe("pdf-reader loop (faux engine)", () => {
 		]);
 		const result = await runPdfReaderAgent(
 			{ path: FIXTURE, question: "integral of x?" },
-			{ engine, onActivity: (line) => void (line && (nudged ||= line.startsWith("pdf_search"))) },
+			{ engine, fsScope: FIXTURE_SCOPE, onActivity: (line) => void (line && (nudged ||= line.startsWith("pdf_search"))) },
 		);
 		assert.match(result.brief, /Found it on page 1/);
 		assert.deepEqual(result.pagesRead, [], "search hits consult but do not read (the split)");
@@ -181,7 +187,7 @@ describe("pdf-reader loop (faux engine)", () => {
 		]);
 		const result = await runPdfReaderAgent(
 			{ path: FIXTURE, question: "what is the force formula?" },
-			{ engine, headless },
+			{ engine, headless, fsScope: FIXTURE_SCOPE },
 		);
 		assert.deepEqual(result.pagesRead, [2, 3], "rendered pages are read pages");
 		assert.deepEqual(result.pagesConsulted, [2, 3]);
@@ -203,6 +209,7 @@ describe("pdf-reader loop (faux engine)", () => {
 			{ path: FIXTURE, question: "page 1 content?" },
 			{
 				engine,
+				fsScope: FIXTURE_SCOPE,
 				headless: {
 					available: () => false,
 					unavailableReason: () => "No Chrome found",
@@ -227,12 +234,23 @@ describe("pdf-reader loop (faux engine)", () => {
 		const engine = fauxEngine([fauxAssistantMessage([fauxText("never reached")])]);
 		const result = await runPdfReaderAgent(
 			{ path: path.join(import.meta.dirname, "fixtures", "not-a-pdf.txt"), question: "anything" },
-			{ engine },
+			{ engine, fsScope: FIXTURE_SCOPE },
 		);
 		// had the model been consulted, the brief would be its text instead
 		assert.match(result.brief, /^PDF failed:/);
 		assert.ok(!result.brief.includes("never reached"));
 		assert.deepEqual(result.pagesRead, []);
+		assert.deepEqual(result.pagesConsulted, []);
+	});
+});
+describe("pdf-reader scope (security hardening 2026-10-26)", () => {
+	it("a PDF outside the granted folders fails before any model call", async () => {
+		const engine = fauxEngine([]);
+		engine.streamFn = () => {
+			throw new Error("the model must not be called");
+		};
+		const result = await runPdfReaderAgent({ path: FIXTURE, question: "anything" }, { engine });
+		assert.match(result.brief, /^PDF failed: Access denied/);
 		assert.deepEqual(result.pagesConsulted, []);
 	});
 });

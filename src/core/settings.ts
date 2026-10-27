@@ -262,6 +262,11 @@ export interface AgentSettings {
 	 *  route); the switch is explicit so users keep a file on disk but run
 	 *  the source default to compare (owner decision 2026-09-19). */
 	prompts?: Record<string, boolean>;
+	/** The folders the agents' fs tools (read/ls/find/grep, the pdf job)
+	 *  may read — learner-granted, absolute real paths (security hardening,
+	 *  2026-10-26). Absent/empty = no file access at all. The write route
+	 *  validates each (exists, directory, not protected). */
+	readableFolders?: string[];
 }
 
 /** Markdown-rendering knobs — the bare-bones set (owner decision). */
@@ -527,6 +532,15 @@ function sanitizeAgent(raw: Record<string, unknown>): AgentSettings {
 		const enabled = (raw.graphTools as Record<string, unknown>).enabled;
 		if (enabled === undefined) out.graphTools = {};
 		else if (typeof enabled === "boolean") out.graphTools = { enabled };
+	}
+	// Readable folders: lenient read side — non-string / relative entries
+	// drop (the write route validates against the disk; fs-scope.ts
+	// re-checks every path at use, so a stale entry can never widen access).
+	if (Array.isArray(raw.readableFolders)) {
+		const folders = raw.readableFolders.filter(
+			(f): f is string => typeof f === "string" && (f.startsWith("/") || /^[A-Za-z]:[\\/]/.test(f)),
+		);
+		if (folders.length) out.readableFolders = folders;
 	}
 	return out;
 }

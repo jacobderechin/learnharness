@@ -106,6 +106,8 @@ async function runLoop(loop: Loop, engine: PiEngine, signal = new AbortControlle
 		onUsage: (usage: Usage) => usages.push(usage),
 		// Direct recording cases enable the observer into an isolated temp dir.
 		chatId: "provider-neutral-offline",
+		// The pdf loop reads its fixture inside one granted folder (fs-scope.ts).
+		fsScope: { roots: () => [path.dirname(FIXTURE)], denied: () => [] },
 	};
 	const result = loop === "visual"
 		? await runVisualMaker({ brief: "A white square, no external resources" }, opts)

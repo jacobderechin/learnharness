@@ -70,6 +70,7 @@ import {
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { prettyModel } from "@/components/usage-format";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { SettingsGroup, SettingsRow, Toggle, CommitInput } from "./controls.tsx";
 import { ModelMenuList, ThinkingMenuList } from "./model-menu";
 import { ChatGPTBackgroundAccess } from "./chatgpt-connection";
@@ -131,6 +132,19 @@ export function composeQuizMechanics(agent: AgentSettings | undefined, mechanics
  *  explicit-off record stays visible as stored. Pure — exported for tests. */
 export function composeGraphTools(agent: AgentSettings | undefined, on: boolean): AgentSettings {
 	return { ...agent, graphTools: { enabled: on } };
+}
+
+/** Compose the readable-folders grant list (security hardening,
+ *  2026-10-26): add one folder (deduped) or remove one; the rest of the
+ *  section rides verbatim. The server validates and normalizes every
+ *  entry on write. Pure — exported for tests. */
+export function composeReadableFolders(agent: AgentSettings | undefined, change: { add: string } | { remove: string }): AgentSettings {
+	const current = agent?.readableFolders ?? [];
+	const readableFolders =
+		"add" in change
+			? current.includes(change.add) ? current : [...current, change.add]
+			: current.filter((folder) => folder !== change.remove);
+	return { ...agent, readableFolders };
 }
 
 /** Compose: one slot's model/thinking override. Empty model = absent
@@ -847,6 +861,60 @@ export function AgentSection({
 						</SettingsRow>
 					);
 				})()}
+			</SettingsGroup>
+
+			{/* Readable folders (security hardening, 2026-10-26): the ONLY
+			    places the agents' file tools may read. Nothing is granted by
+			    default; credentials and app data stay protected inside any
+			    grant. Desktop picks through the native dialog; the browser
+			    build takes a typed absolute path the server validates. */}
+			<SettingsGroup label="Readable folders" testid="group-folders">
+				{(agent?.readableFolders ?? []).length === 0 && (
+					<p className="text-xs text-muted-foreground/70" data-testid="folders-empty">
+						The tutor can't read any of your files until you add a folder.
+					</p>
+				)}
+				{(agent?.readableFolders ?? []).map((folder) => (
+					<SettingsRow key={folder} label={folder} testid="folder-row">
+						<Button
+							type="button"
+							size="xs"
+							variant="outline"
+							className="cursor-pointer"
+							onClick={() => onSectionChange(composeReadableFolders(agent, { remove: folder }))}
+						>
+							Remove
+						</Button>
+					</SettingsRow>
+				))}
+				<SettingsRow label="Add folder" hint="Credentials and app data are never readable" testid="folder-add-row">
+					{typeof window !== "undefined" && window.lh?.pickFolder ? (
+						<Button
+							type="button"
+							size="xs"
+							variant="outline"
+							className="cursor-pointer"
+							data-testid="folder-pick"
+							onClick={() =>
+								void window.lh?.pickFolder?.().then((folder) => {
+									if (folder) onSectionChange(composeReadableFolders(agent, { add: folder }));
+								})
+							}
+						>
+							Choose…
+						</Button>
+					) : (
+						<CommitInput
+							value=""
+							placeholder="/absolute/path"
+							ariaLabel="Add readable folder"
+							testid="folder-input"
+							onCommit={(next) => {
+								if (next) onSectionChange(composeReadableFolders(agent, { add: next }));
+							}}
+						/>
+					)}
+				</SettingsRow>
 			</SettingsGroup>
 
 			<SettingsGroup label="Context" testid="group-context">

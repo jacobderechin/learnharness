@@ -3,14 +3,14 @@ import * as path from "node:path";
 import { Type } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute, type ImageFileResult } from "../tool-execute.ts";
-import { resolveSourcePath } from "./fs-shared.ts";
+import { resolveScopedPath, type FsScope } from "./fs-scope.ts";
 
 /**
  * The read tool — sources v0 (2026-09): a Node port of pi's read semantics
  * for the learner's local files. The flow is learner-owned: he pastes file
  * paths into the chat, the agent reads on its own terms (nothing is
- * auto-injected). Unrestricted local reads are the user-decided v0 scope —
- * this is a personal study harness, not a multi-tenant service.
+ * auto-injected). Reads are confined to the learner-granted folders
+ * (fs-scope.ts — security hardening 2026-10-26).
  *
  * Ported behaviors (mirroring pi's dist/core/tools/read.js):
  * - text files: utf-8, offset (1-indexed) / limit slicing, and the
@@ -92,29 +92,31 @@ function readTextSlice(text: string, offset: number | undefined, limit: number |
  * The read tool, shared verbatim by the prober and the teacher. Sources v1
  * (2026-09-19): the description is pi-verbatim (user: copy tool usage
  * guidance exactly) — the teaching doctrine moved to the shared prompt
- * fragment (prompts/shared/). Relative paths resolve against the
- * learner's home (fs-shared.ts), the harness's anchor.
+ * fragment (prompts/shared/). Paths resolve inside the injected scope
+ * (fs-scope.ts) — the composition root passes the learner's grants.
  */
-export const readTool: AgentTool<typeof readInput> = {
-	name: "read",
-	label: "read",
-	description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50.0KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
-	parameters: readInput,
-	execute: serverExecute("read", readInput, async ({ path: rawPath, offset, limit }): Promise<string | ImageFileResult> => {
-		const absolute = resolveSourcePath(rawPath);
-		const ext = path.extname(absolute).toLowerCase();
-		const mime = IMAGE_MIME[ext];
-		const buffer = await fs.readFile(absolute); // ENOENT/EACCES → error result the model sees
-		if (mime) {
-			// NOTE v0: no resize — raw bytes as base64. Learner files are study
-			// material (screenshots, figures), not adversarial payloads; a resize
-			// step (sharp) can land later if large images prove wasteful.
-			return {
-				text: `Read image file [${mime}] — ${path.basename(absolute)} (${formatSize(buffer.byteLength)}), attached as an image.`,
-				images: [{ data: buffer.toString("base64"), mimeType: mime }],
-			};
-		}
-		const text = buffer.toString("utf-8");
-		return readTextSlice(text, offset, limit);
-	}),
-};
+export function readToolFor(scope: FsScope): AgentTool<typeof readInput> {
+	return {
+		name: "read",
+		label: "read",
+		description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50.0KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
+		parameters: readInput,
+		execute: serverExecute("read", readInput, async ({ path: rawPath, offset, limit }): Promise<string | ImageFileResult> => {
+			const absolute = await resolveScopedPath(scope, rawPath);
+			const ext = path.extname(absolute).toLowerCase();
+			const mime = IMAGE_MIME[ext];
+			const buffer = await fs.readFile(absolute); // ENOENT/EACCES → error result the model sees
+			if (mime) {
+				// NOTE v0: no resize — raw bytes as base64. Learner files are study
+				// material (screenshots, figures), not adversarial payloads; a resize
+				// step (sharp) can land later if large images prove wasteful.
+				return {
+					text: `Read image file [${mime}] — ${path.basename(absolute)} (${formatSize(buffer.byteLength)}), attached as an image.`,
+					images: [{ data: buffer.toString("base64"), mimeType: mime }],
+				};
+			}
+			const text = buffer.toString("utf-8");
+			return readTextSlice(text, offset, limit);
+		}),
+	};
+}

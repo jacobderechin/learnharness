@@ -40,6 +40,7 @@ import {
 	readSettingsRecord,
 	validateChatSettings,
 	validateModelsSettings,
+	validateReadableFolders,
 	writeSettingsRecord,
 	type SettingsBodyResult,
 } from "@/src/server";
@@ -83,6 +84,15 @@ export async function PUT(request: Request, ctx: { params: Promise<{ section: st
 		}
 	}
 	if (section === "agent") {
+		// Readable folders (security hardening, 2026-10-26): each grant must
+		// be an existing, unprotected directory; it is stored as its real
+		// path so containment checks compare like with like.
+		const folders = (parsed.settings as AgentSettings).readableFolders;
+		if (folders) {
+			const verdict = await validateReadableFolders(folders);
+			if (!verdict.ok) return Response.json({ error: verdict.error }, { status: 400 });
+			(parsed.settings as AgentSettings).readableFolders = verdict.folders;
+		}
 		// Orphan-heal (contract fix, interlude 2026-09-26): an ON switch
 		// whose override file is gone (or whose segment left the source
 		// tree) is healed to OFF (key dropped) inside this write — never a
