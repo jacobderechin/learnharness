@@ -42,6 +42,8 @@ export interface ProviderKeyInfo {
 interface KeysResponse {
 	keys: AuthKeyStatus[];
 	providers?: ProviderKeyInfo[];
+	/** The store's at-rest posture (security hardening, 2026-10-26). */
+	storage?: { encrypted: boolean; writable: boolean };
 }
 
 /** The curated tools group, pinned by id (the catalog owns the copy;
@@ -326,6 +328,7 @@ export function KeysSection({
 }) {
 	const [statuses, setStatuses] = useState<AuthKeyStatus[] | null>(null);
 	const [providers, setProviders] = useState<ProviderKeyInfo[] | undefined>(undefined);
+	const [storage, setStorage] = useState<KeysResponse["storage"]>(undefined);
 	const [loading, setLoading] = useState(true);
 	/** The unfolded row (its id), null = all folded. Seeded by the
 	 *  deep-link (initialRow) and re-followed when it retargets. */
@@ -357,6 +360,7 @@ export function KeysSection({
 			.then((body: KeysResponse) => {
 				setStatuses(body.keys ?? []);
 				if (body.providers) setProviders(body.providers);
+				setStorage(body.storage);
 			})
 			.catch(() => setStatuses([]))
 			.finally(() => setLoading(false));
@@ -413,6 +417,14 @@ export function KeysSection({
 
 	return (
 		<>
+			{/* No OS keyring (security hardening, 2026-10-26): keys are only
+			    ever stored encrypted, so saving is refused until one exists. */}
+			{storage && !storage.writable && (
+				<p className="mb-3 rounded-md border border-border px-3 py-2 text-xs text-muted-foreground" data-testid="keyring-warning">
+					No OS keyring is available, so new keys can't be saved securely. Install or unlock GNOME Keyring or KWallet and
+					restart the app, or provide keys as environment variables.
+				</p>
+			)}
 			<SettingsGroup label="Model API keys" testid="group-provider-keys">
 				{providerRows.map((status) => (
 					<KeyTableRow

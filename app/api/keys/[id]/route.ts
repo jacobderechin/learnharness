@@ -4,14 +4,14 @@
  *
  * PUT body {value}: shape-gated (owner decision — bad pastes are 400s
  * naming the expected format, never stored; validation is SHAPE-ONLY, no
- * live pings). Saves take effect immediately (file + env reflected; no
- * restart). A var owned by the REAL env is persisted for later but NOT
- * reflected — the response's status row carries shadowedByEnv so the page
- * can explain why the saved key is not the live one.
+ * live pings). Saves take effect on the next request (no restart). A var
+ * owned by the REAL env is stored for later but shadowed — the response's
+ * status row carries shadowedByEnv so the page can explain why the saved
+ * key is not the live one. A store refusal (desktop with no OS keyring) is
+ * a 503 carrying the store's explanation.
  *
- * DELETE: gone from the file always; the env copy goes only when it was
- * the store's own reflection (a real env var stays — env wins). Idempotent
- * (absent key = success). Writable ids are the CURATED CATALOG ∪ THE
+ * DELETE: gone from the store (a real env var stays — env wins).
+ * Idempotent (absent key = success). Writable ids are the CURATED CATALOG ∪ THE
  * MODEL-PROVIDER env vars (provider-keys interlude); anything else is 404
  * — unknown file vars are preserved, not editable.
  */
@@ -36,8 +36,8 @@ export async function PUT(req: Request, { params }: Params) {
 	if (!body || typeof body !== "object" || Array.isArray(body) || typeof (body as { value?: unknown }).value !== "string") {
 		return Response.json({ error: "body must be {value: string}" }, { status: 400 });
 	}
-	const result = saveKey(id, (body as { value: string }).value);
-	if (!result.ok) return Response.json({ error: result.error }, { status: 400 });
+	const result = await saveKey(id, (body as { value: string }).value);
+	if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
 	return Response.json({ status: result.status });
 }
 
@@ -46,5 +46,7 @@ export async function DELETE(_req: Request, { params }: Params) {
 	if (!isWritableAuthKey(id)) {
 		return Response.json({ error: `unknown key "${id}"` }, { status: 404 });
 	}
-	return Response.json({ status: deleteKey(id) });
+	const result = await deleteKey(id);
+	if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
+	return Response.json({ status: result.status });
 }

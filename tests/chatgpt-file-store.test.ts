@@ -117,9 +117,41 @@ test("file read/write failures are sanitized and cannot leak credential or path 
 	} finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
-test("desktop wiring uses only the private JSON path, with no Electron safeStorage dependency", async () => {
+test("desktop wiring seals the ChatGPT credentials with the OS keyring codec (security hardening 2026-10-26)", async () => {
 	const main = await fs.readFile(new URL("../electron/main.cjs", import.meta.url), "utf8");
-	const auth = await fs.readFile(new URL("../electron/chatgpt.cjs", import.meta.url), "utf8");
-	assert.match(main, /store: fileStore\(path\.join\(app\.getPath\("userData"\), "chatgpt-credentials\.json"\)\)/);
-	assert.doesNotMatch(main + auth, /safeStorage|encryptedStore|chatgpt-credentials\.enc\.json/);
+	assert.match(main, /const codec = keyringCodec\(safeStorage\);/);
+	assert.match(main, /store: fileStore\(path\.join\(app\.getPath\("userData"\), "chatgpt-credentials\.json"\), \{ codec \}\)/);
 });
+
+test("sealed ChatGPT store: ciphertext on disk, legacy plaintext migrated then removed", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lh-chatgpt-sealed-"));
+	const file = path.join(dir, "chatgpt-credentials.json");
+	const codec = fakeCodec(true);
+	const state = { ...initial(), activeId: "A", registrations: [account("A", "first")] };
+	try {
+		await fileStore(file).write(state); // legacy plaintext, as older builds wrote it
+		assert.deepEqual(await fileStore(file, { codec }).read(), state, "legacy file is read");
+		await assert.rejects(fs.access(file), "plaintext removed after a verified migration");
+		const sealed = await fs.readFile(path.join(dir, "chatgpt-credentials.enc"));
+		assert.doesNotMatch(sealed.toString("latin1"), /scratch-access|scratch-refresh/, "no token in clear");
+		assert.deepEqual(await fileStore(file, { codec }).read(), state, "sealed round-trip");
+	} finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test("sealed ChatGPT store: no real keyring refuses writes with the keyring code", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lh-chatgpt-nokeyring-"));
+	const file = path.join(dir, "chatgpt-credentials.json");
+	try {
+		await assert.rejects(fileStore(file, { codec: fakeCodec(false) }).write(initial()), (err: { code?: string }) => err.code === "keyring");
+		await assert.rejects(fs.access(file));
+	} finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+/** A reversible stand-in for the OS keyring (no Electron in tests). */
+function fakeCodec(available: boolean) {
+	return {
+		available: async () => available,
+		encrypt: async (text: string) => Buffer.from(text, "utf8").map((b) => b ^ 0x5a),
+		decrypt: async (buffer: Buffer) => Buffer.from(buffer.map((b) => b ^ 0x5a)).toString("utf8"),
+	};
+}

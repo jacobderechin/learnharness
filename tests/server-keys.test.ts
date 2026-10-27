@@ -1,9 +1,11 @@
 /**
- * The keys composition (auth-keys wave, 2026-09-19): env-reflecting store +
- * env-wins precedence + the masked status view. Owner decisions pinned:
- *  - real env always wins; a PUT to an env-owned var persists to the file
+ * The keys composition (auth-keys wave, 2026-09-19; security hardening
+ * 2026-10-26): store + env-wins precedence + the masked status view.
+ * Pinned:
+ *  - real env always wins; a PUT to an env-owned var persists to the store
  *    but never overwrites the env copy (status reports shadowedByEnv);
- *  - saves/deletes take effect immediately (file + process.env together);
+ *  - saves/deletes take effect immediately through keyValue and the pi-ai
+ *    auth lookup (providerEnvValue) — stored keys NEVER enter process.env;
  *  - unknown file vars are preserved and surfaced, never editable.
  *
  * LH_AUTH_FILE redirects to a fresh tmp dir BEFORE the imports (the seam is
@@ -46,12 +48,13 @@ fs.writeFileSync(
 		OPENROUTER_API_KEY: "sk-or-v1-filefilefile",
 		FUTURE_PLANS_TOKEN: "opaque-plans-token",
 	}),
+	{ mode: 0o600 }, // the store refuses a group/world-readable key file
 );
 // Real env (set BEFORE the module's first import → boot snapshots it):
 process.env.OPENROUTER_API_KEY = "sk-or-v1-envvalue99";
 
-// Import AFTER env setup — module init runs the boot fill-gap + snapshot.
-const { deleteKey, initAuthEnv, keyStatuses, keyValue, resolveKeyStatuses, saveKey, isWritableAuthKey } = await import(
+// Import AFTER env setup — module init runs the boot env snapshot.
+const { deleteKey, initAuthEnv, keyStatuses, keyValue, providerEnvValue, resolveKeyStatuses, saveKey, isWritableAuthKey } = await import(
 	"../src/server/keys.ts"
 );
 const { authStore } = await import("../src/store/auth.ts");
@@ -65,7 +68,7 @@ after(() => {
 	fs.rmSync(TMP, { recursive: true, force: true });
 });
 
-describe("boot fill-gap + precedence", () => {
+describe("boot snapshot + precedence", () => {
 	it("env-owned var: env wins, shadow reported, file copy kept", () => {
 		const row = keyStatuses().find((s) => s.id === "OPENROUTER_API_KEY")!;
 		assert.equal(row.source, "env");
@@ -74,8 +77,8 @@ describe("boot fill-gap + precedence", () => {
 		assert.equal(authStore.authVars().OPENROUTER_API_KEY, "sk-or-v1-filefilefile", "file copy untouched");
 	});
 
-	it("unknown file var: fill-gapped into env, surfaced as a generic row", () => {
-		assert.equal(process.env.FUTURE_PLANS_TOKEN, "opaque-plans-token", "reflected at boot");
+	it("unknown file var: never copied into env, surfaced as a generic row", () => {
+		assert.equal(process.env.FUTURE_PLANS_TOKEN, undefined, "stored keys never enter process.env");
 		const row = keyStatuses().find((s) => s.id === "FUTURE_PLANS_TOKEN")!;
 		assert.equal(row.info, null, "no curated form");
 		assert.equal(row.source, "file");
@@ -98,48 +101,65 @@ describe("boot fill-gap + precedence", () => {
 });
 
 describe("saveKey / deleteKey (immediate effect, no restart)", () => {
-	it("save reflects into env + file (fill-gap set)", () => {
+	it("save lands in the store and is live at once — never in process.env", async () => {
 		const value = "d".repeat(40); // throwaway, ≥ Deepgram floor
-		const r = saveKey("DEEPGRAM_API_KEY", value);
+		const r = await saveKey("DEEPGRAM_API_KEY", value);
 		assert.ok(r.ok);
-		assert.equal(process.env.DEEPGRAM_API_KEY, value, "env updated immediately");
+		assert.equal(process.env.DEEPGRAM_API_KEY, undefined, "no env copy");
+		assert.equal(keyValue("DEEPGRAM_API_KEY"), value, "live through keyValue");
+		assert.equal(providerEnvValue("DEEPGRAM_API_KEY"), value, "live through the pi-ai auth lookup");
 		assert.equal(authStore.authVars().DEEPGRAM_API_KEY, value, "file updated");
-		assert.equal(r.status.source, "file", "the reflected copy is the store's — the file is its origin of truth");
+		assert.equal(r.status.source, "file");
 		assert.ok(!r.status.shadowedByEnv);
+		assert.equal((fs.statSync(AUTH).mode & 0o777).toString(8), "600", "owner-only on disk");
 	});
 
-	it("save to an env-owned var: file updated, env NOT overwritten, shadow reported", () => {
-		const r = saveKey("OPENROUTER_API_KEY", "sk-or-v1-newvalue12345");
+	it("providerEnvValue passes non-key names through to process.env", () => {
+		process.env.LH_TEST_REGION = "eu-test-1";
+		try {
+			assert.equal(providerEnvValue("LH_TEST_REGION"), "eu-test-1");
+		} finally {
+			delete process.env.LH_TEST_REGION;
+		}
+	});
+
+	it("save to an env-owned var: file updated, env NOT overwritten, shadow reported", async () => {
+		const r = await saveKey("OPENROUTER_API_KEY", "sk-or-v1-newvalue12345");
 		assert.ok(r.ok);
 		assert.equal(process.env.OPENROUTER_API_KEY, ENV_OWNED, "real env untouched");
 		assert.equal(authStore.authVars().OPENROUTER_API_KEY, "sk-or-v1-newvalue12345", "file updated for later");
 		assert.ok(r.status.shadowedByEnv);
 	});
 
-	it("bad shape: rejected, nothing stored or reflected", () => {
+	it("bad shape: rejected (400), nothing stored", async () => {
 		const before = JSON.stringify(authStore.authVars());
-		const r = saveKey("DEEPGRAM_API_KEY", "short");
+		const r = await saveKey("DEEPGRAM_API_KEY", "short");
 		assert.ok(!r.ok);
-		if (!r.ok) assert.match(r.error, /at least 20/);
+		if (!r.ok) {
+			assert.match(r.error, /at least 20/);
+			assert.equal(r.status, 400);
+		}
 		assert.equal(JSON.stringify(authStore.authVars()), before);
-		assert.equal(process.env.DEEPGRAM_API_KEY, "d".repeat(40));
+		assert.equal(keyValue("DEEPGRAM_API_KEY"), "d".repeat(40));
 	});
 
-	it("unknown id: rejected with the supported list", () => {
-		const r = saveKey("FUTURE_PLANS_TOKEN", "anything-at-all-here");
+	it("unknown id: rejected with the supported list", async () => {
+		const r = await saveKey("FUTURE_PLANS_TOKEN", "anything-at-all-here");
 		assert.ok(!r.ok);
 		if (!r.ok) assert.match(r.error, /FUTURE_PLANS_TOKEN/);
 	});
 
-	it("delete removes env + file for fill-gap vars", () => {
-		const row = deleteKey("DEEPGRAM_API_KEY");
-		assert.ok(!row.present);
-		assert.equal(process.env.DEEPGRAM_API_KEY, undefined, "env copy was ours — removed");
+	it("delete removes the stored key", async () => {
+		const r = await deleteKey("DEEPGRAM_API_KEY");
+		assert.ok(r.ok && !r.status.present);
+		assert.equal(keyValue("DEEPGRAM_API_KEY"), undefined);
 		assert.ok(!("DEEPGRAM_API_KEY" in authStore.authVars()));
 	});
 
-	it("delete of an env-owned var: file copy gone, env remains (env wins)", () => {
-		const row = deleteKey("OPENROUTER_API_KEY");
+	it("delete of an env-owned var: file copy gone, env remains (env wins)", async () => {
+		const r = await deleteKey("OPENROUTER_API_KEY");
+		assert.ok(r.ok);
+		const row = r.status;
 		assert.equal(row.source, "env");
 		assert.ok(row.present, "still live from the real env");
 		assert.ok(!row.shadowedByEnv, "nothing left in the file to shadow");
@@ -158,22 +178,23 @@ describe("saveKey / deleteKey (immediate effect, no restart)", () => {
 			assert.ok(!rows.includes("ZAI_API_KEY"));
 		});
 
-		it("save via provider env var: generic guard, reflected immediately", () => {
+		it("save via provider env var: generic guard, live immediately", async () => {
 			const value = "sk-throwaway-openai-0123456789"; // never a real secret
-			const r = saveKey("OPENAI_API_KEY", value);
+			const r = await saveKey("OPENAI_API_KEY", value);
 			assert.ok(r.ok);
-			assert.equal(process.env.OPENAI_API_KEY, value, "env updated immediately");
+			assert.equal(process.env.OPENAI_API_KEY, undefined, "never copied into env");
+			assert.equal(providerEnvValue("OPENAI_API_KEY"), value, "pi-ai sees it through the auth lookup");
 			assert.equal(authStore.authVars().OPENAI_API_KEY, value, "file updated");
 			const row = keyStatuses().find((s) => s.id === "OPENAI_API_KEY")!;
 			assert.ok(row.present);
-			assert.equal(row.source, "file", "fill-gap reflection — origin is the store");
+			assert.equal(row.source, "file");
 		});
 
-		it("provider truncations/whitespace are 400s (paste hygiene only)", () => {
-			assert.ok(!saveKey("OPENAI_API_KEY", "short").ok);
-			assert.ok(!saveKey("OPENAI_API_KEY", "has whitespace now").ok);
+		it("provider truncations/whitespace are 400s (paste hygiene only)", async () => {
+			assert.ok(!(await saveKey("OPENAI_API_KEY", "short")).ok);
+			assert.ok(!(await saveKey("OPENAI_API_KEY", "has whitespace now")).ok);
 			// no family check anymore — any ≥12-char token passes
-			assert.ok(saveKey("OPENROUTER_API_KEY", "not-sk-or-but-12chars").ok);
+			assert.ok((await saveKey("OPENROUTER_API_KEY", "not-sk-or-but-12chars")).ok);
 		});
 
 		it("isWritableAuthKey: curated ∪ provider env vars; unknown stays unwritable", () => {
@@ -184,12 +205,12 @@ describe("saveKey / deleteKey (immediate effect, no restart)", () => {
 			assert.ok(!isWritableAuthKey("ANTHROPIC_AUTH_TOKEN"), "anthropic alternates stay env-only");
 		});
 
-		it("delete of a provider key: env + file both cleared", () => {
-			deleteKey("OPENAI_API_KEY");
-			assert.equal(process.env.OPENAI_API_KEY, undefined);
+		it("delete of a provider key: store cleared", async () => {
+			await deleteKey("OPENAI_API_KEY");
+			assert.equal(providerEnvValue("OPENAI_API_KEY"), undefined);
 			assert.ok(!("OPENAI_API_KEY" in authStore.authVars()));
 			// cleanup the openrouter save from the guard test too
-			deleteKey("OPENROUTER_API_KEY");
+			await deleteKey("OPENROUTER_API_KEY");
 			assert.ok(!("OPENROUTER_API_KEY" in authStore.authVars()));
 		});
 	});

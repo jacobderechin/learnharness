@@ -4,8 +4,7 @@
 // This module is main-process-only; dependencies are injectable for scratch tests.
 const crypto = require("node:crypto");
 const http = require("node:http");
-const fs = require("node:fs/promises");
-const path = require("node:path");
+const { KEYRING_MESSAGE, secretJsonFile } = require("./sealed-file.cjs");
 
 const ISSUER = "https://auth.openai.com";
 const RESOURCE = "https://api.openai.com/v1";
@@ -20,6 +19,7 @@ const publicError = (err) => ({
 	cancelled: "ChatGPT sign-in cancelled.",
 	timeout: "ChatGPT sign-in timed out. Try again.",
 	storage: "ChatGPT credentials could not be read or saved. Check local file access, then reconnect before making requests.",
+	keyring: KEYRING_MESSAGE,
 	identity: "ChatGPT sign-in could not be verified. Select the intended saved account and try again.",
 	scope: "ChatGPT plan permission is missing. Reconnect and authorize ChatGPT plan use.",
 	disconnected: "This ChatGPT connection is disconnected. Reconnect in Providers.",
@@ -50,39 +50,32 @@ function validateState(state) {
 	return state;
 }
 
-/** Private, unencrypted JSON outside learning data. No OS credential-store access. */
-function fileStore(file) {
+/** Private credentials outside learning data: sealed with the OS keyring
+ *  when a codec is given (desktop main — sealed-file.cjs), else an
+ *  owner-only plaintext file (web/dev). Reads refuse non-owner-only files. */
+function fileStore(file, { codec = null } = {}) {
+	const secret = secretJsonFile(file, { codec });
 	return {
 		async read() {
+			let raw;
 			try {
-				return validateState(JSON.parse(await fs.readFile(file, "utf8")));
+				raw = await secret.read();
 			} catch (err) {
-				if (err.code === "ENOENT") return null;
+				throw fail(err?.code === "keyring" ? "keyring" : "storage");
+			}
+			if (raw === null) return null;
+			try {
+				return validateState(raw);
+			} catch {
 				throw fail("storage");
 			}
 		},
 		async write(state) {
 			validateState(state);
-			const temp = `${file}.${crypto.randomUUID()}.tmp`;
-			let handle;
 			try {
-				await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-				handle = await fs.open(temp, "wx", 0o600);
-				await handle.writeFile(`${JSON.stringify(state)}\n`);
-				await handle.sync();
-				await handle.close();
-				handle = null;
-				await fs.rename(temp, file);
-				// Directory fsync is supported on Unix; the file fsync above is mandatory.
-				if (process.platform !== "win32") {
-					const dir = await fs.open(path.dirname(file), "r");
-					try { await dir.sync(); } finally { await dir.close(); }
-				}
-			} catch {
-				throw fail("storage");
-			} finally {
-				await handle?.close().catch(() => {});
-				await fs.unlink(temp).catch(() => {});
+				await secret.write(state);
+			} catch (err) {
+				throw fail(err?.code === "keyring" ? "keyring" : "storage");
 			}
 		},
 	};

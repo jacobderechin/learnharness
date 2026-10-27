@@ -14,12 +14,13 @@
  * THIS API (owner decision). `source` tells the page whether the live
  * value comes from the environment (dev .env.local / launch env) or the
  * file, and `shadowedByEnv` explains why a saved key is not the live one
- * (env always wins).
+ * (env always wins). `storage` reports the store's at-rest posture
+ * (encrypted with the OS keyring; writable = a real keyring exists).
  */
-import { keyStatuses, providerKeyList } from "@/src/server";
+import { keyStatuses, keyStorage, providerKeyList } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-	return Response.json({ keys: keyStatuses(), providers: providerKeyList() });
+	return Response.json({ keys: keyStatuses(), providers: providerKeyList(), storage: keyStorage() });
 }

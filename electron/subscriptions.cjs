@@ -4,12 +4,14 @@ const path = require("node:path");
 const { createRequire, registerHooks } = require("node:module");
 const { pathToFileURL } = require("node:url");
 const { PROVIDERS, fileStore, validateCredential, safeHttps, failure } = require("./subscription-store.cjs");
+const { KEYRING_MESSAGE } = require("./sealed-file.cjs");
 
 const LABELS = { "github-copilot": "GitHub Copilot", xai: "Grok" };
 const APIS = new Set(["openai-responses", "openai-completions", "anthropic-messages"]);
 const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const MESSAGES = {
 	storage: "The saved connection could not be read or written safely. Reopen the app or reconnect after resolving the credential-file problem.",
+	keyring: KEYRING_MESSAGE,
 	login: "Sign-in did not complete. Try connecting again.",
 	refresh: "The connection could not be refreshed. Retry or reconnect in Providers.",
 	cancel: "Sign-in cancelled.",
@@ -50,7 +52,7 @@ function createSubscriptions(options) {
 	let sdk;
 	let closed = false, paused = false;
 	const entries = new Map(PROVIDERS.map((providerId) => [providerId, {
-		providerId, state: { version: 1, allowBackgroundUse: true }, disk: options.stores?.[providerId] ?? fileStore(path.join(options.directory, `${providerId}-credentials.json`), providerId),
+		providerId, state: { version: 1, allowBackgroundUse: true }, disk: options.stores?.[providerId] ?? fileStore(path.join(options.directory, `${providerId}-credentials.json`), providerId, undefined, options.codec ?? null),
 		epoch: 0, authorityRevision: 0, revision: 0, tail: Promise.resolve(), fatal: false, blocked: false, ready: false, error: undefined, authFailed: false, attempt: null, catalog: [], endpoint: null,
 	}]));
 	const entryFor = (id) => { const entry = entries.get(id); if (!entry) throw failure("unavailable"); return entry; };
@@ -86,9 +88,9 @@ function createSubscriptions(options) {
 		}
 		if (entry.endpoint !== endpoint) { entry.endpoint = endpoint; entry.authorityRevision++; }
 	}
-	function storageFailed(entry) { entry.fatal = true; entry.blocked = true; entry.epoch++; entry.error = MESSAGES.storage; changed(entry); }
+	function storageFailed(entry, code = "storage") { entry.fatal = true; entry.blocked = true; entry.epoch++; entry.error = MESSAGES[code] ?? MESSAGES.storage; changed(entry); }
 	async function save(entry, state) {
-		try { await entry.disk.write(state); } catch { storageFailed(entry); throw failure("storage"); }
+		try { await entry.disk.write(state); } catch (error) { const code = error?.code === "keyring" ? "keyring" : "storage"; storageFailed(entry, code); throw failure(code); }
 		entry.state = clone(state);
 		try { await updateEndpoint(entry); catalog(entry); } catch { storageFailed(entry); throw failure("storage"); }
 		changed(entry);

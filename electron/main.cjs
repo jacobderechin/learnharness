@@ -24,13 +24,15 @@
  *     would shadow every settings-page key change until restart.
  */
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, session, shell } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, safeStorage, session, shell } = require("electron");
 const { createChatGPT, fileStore } = require("./chatgpt.cjs");
 const { attachChatGPTChild, trustedSender, chatGPTControl } = require("./chatgpt-ipc.cjs");
 const { createSubscriptions, loadSubscriptionSDK } = require("./subscriptions.cjs");
 const { attachSubscriptionChild, subscriptionControl } = require("./subscription-ipc.cjs");
 const { desktopAPIHeaders } = require("./desktop-api.cjs");
 const { openWebSubscriptionBrowser } = require("./web-subscription-browser.cjs");
+const { keyringCodec } = require("./sealed-file.cjs");
+const { attachKeyChild, createKeyVault } = require("./key-vault.cjs");
 const { randomBytes } = require("node:crypto");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
@@ -139,6 +141,8 @@ let chatgpt = null;
 let chatgptChild = null;
 let subscriptions = null;
 let subscriptionChild = null;
+let keyVault = null;
+let keyChild = null;
 // Per-launch request capability, never OAuth tokens and never renderer state.
 let desktopAPISecret = null;
 let reopenWindow = null;
@@ -169,12 +173,14 @@ function freePort() {
 	});
 }
 
-/** BYOK keys: auth.json in userData, flat {VAR: value} map, 0600 —
- *  SERVER-MANAGED since the auth-keys wave (2026-09-19). This shell no
- *  longer reads or injects it: the child gets LH_AUTH_FILE below and does
- *  its own read/reflect/write, so a key saved in the settings page takes
- *  effect on the next model call — no restart. Real environment variables
- *  still win over the file inside the child (its documented rule). */
+/** BYOK keys (security hardening, 2026-10-26): sealed in userData/auth.enc
+ *  by the key vault (key-vault.cjs — OS keyring via safeStorage). Main
+ *  owns the vault; the server child reads and writes keys only over the
+ *  inherited IPC channel, so a key saved in the settings page takes effect
+ *  on the next model call with no restart and never enters an environment.
+ *  The child still gets LH_AUTH_FILE: its directory is on the agent fs
+ *  denylist (src/server/fs-access.ts). Real environment variables still
+ *  win over the vault inside the child (its documented rule). */
 
 function log(line) {
 	const stamp = new Date().toISOString();
@@ -229,6 +235,7 @@ function startServer(port) {
 		serverProcess = child;
 		chatgptChild = attachChatGPTChild(child, chatgpt);
 		subscriptionChild = attachSubscriptionChild(child, subscriptions);
+		keyChild = attachKeyChild(child, keyVault);
 		const fwd = (buf) => buf.toString().trimEnd().split("\n").forEach((l) => l && log(`server: ${l}`));
 		child.stdout.on("data", fwd);
 		child.stderr.on("data", fwd);
@@ -239,6 +246,8 @@ function startServer(port) {
 			chatgptChild = null;
 			subscriptionChild?.dispose();
 			subscriptionChild = null;
+			keyChild?.dispose();
+			keyChild = null;
 			chatgpt?.close();
 			subscriptions?.close();
 		});
@@ -658,8 +667,14 @@ async function main() {
 		session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ["<all_urls>"] }, (details, callback) => {
 			callback({ requestHeaders: desktopAPIHeaders(details, ownedOrigin, desktopAPISecret, [...trustedAppWindows]) });
 		});
+		// Every persisted credential is sealed with the OS keyring
+		// (sealed-file.cjs); legacy plaintext files migrate on first read.
+		const codec = keyringCodec(safeStorage);
+		keyVault = createKeyVault({ file: AUTH_FILE(), codec });
+		const keys = await keyVault.load();
+		log(`key vault: ${Object.keys(keys.vars).length} key(s) · ${keys.encrypted ? "sealed" : "legacy plaintext"} · ${keys.writable ? "writable" : "keyring unavailable — saving keys is refused"}`);
 		chatgpt = createChatGPT({
-			store: fileStore(path.join(app.getPath("userData"), "chatgpt-credentials.json")),
+			store: fileStore(path.join(app.getPath("userData"), "chatgpt-credentials.json"), { codec }),
 			openExternal: (target) => shell.openExternal(target),
 			onChange: (value) => {
 				chatgptChild?.send(value);
@@ -668,6 +683,7 @@ async function main() {
 		});
 		subscriptions = createSubscriptions({
 			directory: app.getPath("userData"),
+			codec,
 			loadSDK: () => loadSubscriptionSDK(path.dirname(serverEntry())),
 			openExternal: (target) => shell.openExternal(target),
 			onChange: (snapshot) => {
@@ -677,7 +693,7 @@ async function main() {
 		});
 		await subscriptions.ready;
 		log(`starting server: ${serverEntry()}`);
-		log(`data dir: ${DATA_DIR()}${fs.existsSync(AUTH_FILE()) ? " · auth.json: present" : " · auth.json: ABSENT (no BYOK keys yet)"}`);
+		log(`data dir: ${DATA_DIR()}`);
 		await startServer(new URL(url).port);
 		await waitUntilUp(url);
 		log(`server up: ${url}`);
